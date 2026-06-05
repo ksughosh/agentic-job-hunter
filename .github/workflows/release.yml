@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name (e.g. v0.1.0)"
+        required: true
+
+jobs:
+  build:
+    name: Build release artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Python syntax
+        run: python -m compileall -q agents portal main.py config.py
+
+      - name: Build zip artifact
+        id: zip
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          NAME="agentic-job-hunter-${TAG}"
+          mkdir -p release
+          # Use git archive so .gitignored files are excluded automatically.
+          # Adds a top-level prefix matching $NAME for clean extraction.
+          git archive --format=zip --prefix="${NAME}/" -o "release/${NAME}.zip" HEAD
+          echo "path=release/${NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}.zip" >> "$GITHUB_OUTPUT"
+          ls -lh release/
+
+      - name: Compute checksum
+        run: |
+          cd release
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          retention-days: 90
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          PREV=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1 || true)
+          {
+            echo "## Agentic Job Hunter ${TAG}"
+            echo ""
+            if [ -n "$PREV" ]; then
+              echo "### Changes since ${PREV}"
+              git log --pretty=format:"- %s (%h)" "${PREV}..${TAG}" 2>/dev/null || git log --pretty=format:"- %s (%h)" -n 20
+            else
+              echo "### Initial release"
+              git log --pretty=format:"- %s (%h)" -n 30
+            fi
+            echo ""
+            echo ""
+            echo "### Install"
+            echo '```bash'
+            echo "curl -L https://github.com/${{ github.repository }}/releases/download/${TAG}/agentic-job-hunter-${TAG}.zip -o jh.zip"
+            echo "unzip jh.zip && cd agentic-job-hunter-${TAG}"
+            echo "./install.sh && ./run.sh"
+            echo '```'
+          } > release/NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body_path: release/NOTES.md
+          files: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.name, '-rc') || contains(steps.tag.outputs.name, '-beta') || contains(steps.tag.outputs.name, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

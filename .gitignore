@@ -1,0 +1,60 @@
+# Secrets & env
+.env
+.env.*
+!.env.example
+cookies.txt
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# Test & cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# User runtime data (per-user resumes, search results)
+data/
+!data/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+nohup.out
+
+# Node (in case portal adds JS bundling later)
+node_modules/
+
+# Release artifacts
+*.zip
+release/

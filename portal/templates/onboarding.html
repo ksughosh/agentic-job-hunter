@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Hunter — AI-Powered Job Search</title>
+    <style>
+        :root {
+            --bg: #0f0f13;
+            --surface: #1a1a24;
+            --surface2: #22222e;
+            --border: #2d2d3d;
+            --text: #e4e4ef;
+            --text2: #9999aa;
+            --accent: #6c5ce7;
+            --accent2: #a29bfe;
+            --green: #00cec9;
+            --orange: #fdcb6e;
+            --red: #e17055;
+            --radius: 12px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ── Burger Menu ── */
+        .burger-menu {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        .burger-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: all 0.2s;
+        }
+        .burger-btn:hover { border-color: var(--accent); background: var(--surface2); }
+        .burger-btn .bar {
+            width: 20px;
+            height: 2px;
+            background: var(--text);
+            border-radius: 1px;
+            transition: all 0.3s;
+        }
+        .burger-btn.open .bar:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+        .burger-btn.open .bar:nth-child(2) { opacity: 0; }
+        .burger-btn.open .bar:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+        .user-panel {
+            position: fixed;
+            top: 0;
+            right: -360px;
+            width: 340px;
+            height: 100vh;
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            z-index: 999;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -8px 0 30px rgba(0,0,0,0.4);
+        }
+        .user-panel.open { right: 0; }
+        .user-panel-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .user-panel-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent2), var(--green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .user-panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .user-card {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .user-card:hover { border-color: var(--accent); }
+        .user-card.active {
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.1);
+        }
+        .user-card .user-name {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .user-card .user-meta {
+            font-size: 11px;
+            color: var(--text2);
+        }
+        .user-card .user-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+        .badge-active { background: rgba(0, 206, 201, 0.15); color: var(--green); }
+        .badge-running { background: rgba(108, 92, 231, 0.15); color: var(--accent2); }
+        .badge-results { background: rgba(253, 203, 110, 0.15); color: var(--orange); }
+        .user-delete {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            color: var(--text2);
+            font-size: 16px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s;
+            padding: 4px;
+        }
+        .user-card:hover .user-delete { opacity: 1; }
+        .user-delete:hover { color: var(--red); }
+
+        .add-user-btn {
+            width: 100%;
+            padding: 12px;
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            background: none;
+            color: var(--accent2);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 4px;
+        }
+        .add-user-btn:hover { border-color: var(--accent); background: rgba(108, 92, 231, 0.05); }
+
+        .user-panel-footer {
+            padding: 16px;
+            border-top: 1px solid var(--border);
+            font-size: 11px;
+            color: var(--text2);
+            text-align: center;
+        }
+
+        .panel-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 998;
+            display: none;
+            backdrop-filter: blur(2px);
+        }
+        .panel-overlay.visible { display: block; }
+
+        /* Search Profile cards */
+        .sp-card { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; position: relative; }
+        .sp-card:hover { border-color: var(--accent); }
+        .sp-card.active { border-color: var(--green); background: rgba(0, 206, 201, 0.08); }
+        .sp-card .sp-name { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+        .sp-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+        .sp-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 500; background: rgba(108, 92, 231, 0.12); color: var(--accent2); }
+        .sp-chip.mode { background: rgba(0, 206, 201, 0.12); color: var(--green); }
+        .sp-chip.loc { background: rgba(253, 203, 110, 0.12); color: var(--orange); }
+        .sp-card .sp-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s; }
+        .sp-card:hover .sp-actions { opacity: 1; }
+        .sp-action-btn { background: none; border: none; color: var(--text2); font-size: 14px; cursor: pointer; padding: 2px 4px; }
+        .sp-action-btn:hover { color: var(--accent); }
+        .sp-action-btn.delete:hover { color: var(--red); }
+
+        .hero {
+            text-align: center;
+            max-width: 720px;
+            padding: 40px 24px;
+        }
+        .logo {
+            font-size: 48px;
+            margin-bottom: 8px;
+        }
+        .hero h1 {
+            font-size: 36px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            background: linear-gradient(135deg, var(--accent2), var(--green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .hero p {
+            color: var(--text2);
+            font-size: 16px;
+            margin-top: 8px;
+            line-height: 1.7;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            margin: 32px auto 0;
+            position: relative;
+        }
+
+        .step {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        .step-num {
+            background: linear-gradient(135deg, var(--accent), #5a4bd1);
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 14px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .step-content { flex: 1; }
+        .step-content label {
+            font-size: 15px;
+            font-weight: 700;
+            display: block;
+            margin-bottom: 8px;
+        }
+        .step-content .hint {
+            font-size: 12px;
+            color: var(--text2);
+            margin-bottom: 10px;
+        }
+
+        /* Upload area */
+        .upload-area {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            padding: 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: var(--surface2);
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.05);
+        }
+        .upload-area.has-file {
+            border-color: var(--green);
+            background: rgba(0, 206, 201, 0.05);
+        }
+        .upload-area input[type="file"] { display: none; }
+        .upload-icon { font-size: 36px; margin-bottom: 8px; }
+        .upload-text { color: var(--text2); font-size: 14px; }
+        .upload-text strong { color: var(--accent2); }
+        .file-name {
+            color: var(--green);
+            font-weight: 600;
+            font-size: 14px;
+            margin-top: 6px;
+        }
+
+        /* Search input */
+        .search-input {
+            width: 100%;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 18px;
+            font-size: 15px;
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .search-input:focus {
+            border-color: var(--accent);
+        }
+        .search-input::placeholder {
+            color: var(--text2);
+        }
+
+        /* Suggestions */
+        .suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .suggestion-chip {
+            background: rgba(108, 92, 231, 0.12);
+            border: 1px solid rgba(108, 92, 231, 0.25);
+            color: var(--accent2);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .suggestion-chip:hover {
+            background: rgba(108, 92, 231, 0.25);
+        }
+
+        /* Launch button */
+        .launch-btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: linear-gradient(135deg, var(--accent), #5a4bd1);
+            color: white;
+            margin-top: 8px;
+            letter-spacing: 0.5px;
+        }
+        .launch-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px rgba(108, 92, 231, 0.3);
+        }
+        .launch-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        /* Progress */
+        .progress-section {
+            display: none;
+            margin-top: 24px;
+        }
+        .progress-section.active { display: block; }
+        .progress-bar-track {
+            width: 100%;
+            height: 6px;
+            background: var(--surface2);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--green));
+            border-radius: 3px;
+            transition: width 0.5s ease;
+            width: 0%;
+        }
+        .progress-status {
+            font-size: 13px;
+            color: var(--text2);
+            text-align: center;
+        }
+        .progress-status .agent-name {
+            color: var(--accent2);
+            font-weight: 600;
+        }
+
+        /* Pipeline steps */
+        .pipeline {
+            display: flex;
+            margin-top: 16px;
+            align-items: center;
+        }
+        .pipeline-step {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 11px;
+            color: var(--text2);
+            padding: 8px 12px;
+            border-radius: 20px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+        .pipeline-connector {
+            width: 24px;
+            height: 2px;
+            background: var(--border);
+            flex-shrink: 0;
+            position: relative;
+            transition: background 0.4s;
+        }
+        .pipeline-connector::after {
+            content: '';
+            position: absolute;
+            right: -1px;
+            top: -3px;
+            width: 0;
+            height: 0;
+            border-left: 5px solid var(--border);
+            border-top: 4px solid transparent;
+            border-bottom: 4px solid transparent;
+            transition: border-left-color 0.4s;
+        }
+        .pipeline-connector.done {
+            background: var(--green);
+        }
+        .pipeline-connector.done::after {
+            border-left-color: var(--green);
+        }
+        .pipeline-connector.active {
+            background: var(--accent);
+        }
+        .pipeline-connector.active::after {
+            border-left-color: var(--accent);
+        }
+        .pipeline-step.active {
+            color: var(--accent2);
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.1);
+        }
+        .pipeline-step.done {
+            color: var(--green);
+            border-color: var(--green);
+            background: rgba(0, 206, 201, 0.08);
+        }
+        .pipeline-step .dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--text2);
+        }
+        .pipeline-step.active .dot { background: var(--accent2); }
+        .pipeline-step.done .dot { background: var(--green); }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50%       { opacity: 0.4; transform: scale(0.7); }
+        }
+        .cancel-btn {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            width: 28px;
+            height: 28px;
+            background: var(--surface2);
+            color: var(--text2);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }
+        .cancel-btn:hover { background: rgba(231,76,60,0.15); color: #e74c3c; border-color: #e74c3c; }
+        .cancel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Footer */
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--text2);
+            padding-bottom: 24px;
+        }
+        .footer a { color: var(--accent2); text-decoration: none; }
+
+        /* API Key setup */
+        .api-setup {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .api-setup summary {
+            font-size: 13px;
+            color: var(--text2);
+            cursor: pointer;
+            padding: 4px 0;
+        }
+        .api-setup .api-input-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .api-setup input {
+            flex: 1;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 13px;
+            color: var(--text);
+            font-family: monospace;
+            outline: none;
+        }
+        .api-setup input:focus { border-color: var(--accent); }
+        .api-save-btn {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .api-save-btn:hover { border-color: var(--accent); }
+        .api-status {
+            font-size: 11px;
+            margin-top: 6px;
+            color: var(--text2);
+        }
+        .api-status.ok { color: var(--green); }
+        .api-status.err { color: var(--red); }
+
+        /* Work mode toggle */
+        .mode-toggle {
+            cursor: pointer;
+            padding: 10px 18px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--surface2);
+            font-size: 13px;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        .mode-toggle:hover { border-color: var(--accent); }
+        .mode-toggle.active {
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.15);
+            color: var(--accent2);
+        }
+
+        /* LLM Provider toggle */
+        .provider-toggle {
+            display: flex;
+            gap: 0;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .provider-btn {
+            padding: 8px 16px;
+            border: none;
+            background: var(--surface);
+            color: var(--text2);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .provider-btn:first-child { border-right: 1px solid var(--border); }
+        .provider-btn.active {
+            background: rgba(108, 92, 231, 0.2);
+            color: var(--accent2);
+        }
+        .provider-btn:hover:not(.active) { background: var(--surface2); }
+    </style>
+</head>
+<body>
+    <!-- Burger Menu & User Panel -->
+    <div class="burger-menu">
+        <button class="burger-btn" id="burgerBtn" onclick="togglePanel()">
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+        </button>
+    </div>
+
+    <div class="panel-overlay" id="panelOverlay" onclick="togglePanel()"></div>
+
+    <div class="user-panel" id="userPanel">
+        <div class="user-panel-header">
+            <h3>&#x1f465; Profiles</h3>
+            <span style="font-size:12px; color:var(--text2);" id="userCount"></span>
+        </div>
+        <div class="user-panel-body" id="userList">
+            <!-- Populated by JS -->
+        </div>
+        <div style="padding: 0 16px 16px;">
+            <button class="add-user-btn" onclick="addNewUser()">+ Add New Profile</button>
+        </div>
+
+        <!-- Search Profiles Section -->
+        <div style="border-top: 1px solid var(--border); padding: 16px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <h3 style="font-size:14px; font-weight:700; color:var(--accent2); margin:0;">&#x1f50d; Search Configs</h3>
+                <span style="font-size:11px; color:var(--text2);" id="spCount"></span>
+            </div>
+            <div id="searchProfileList"></div>
+            <button class="add-user-btn" onclick="SearchProfiles.showCreate()" style="margin-top:8px;">+ New Search Config</button>
+        </div>
+
+        <div class="user-panel-footer">
+            Each profile has its own resume. Each search config has its own roles, filters, and results.
+        </div>
+    </div>
+
+    <!-- Search Profile Create/Edit Modal -->
+    <div id="spModal" style="display:none; position:fixed; inset:0; z-index:1100; background:rgba(0,0,0,0.5); backdrop-filter:blur(2px); align-items:center; justify-content:center;">
+        <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; width:360px; max-height:80vh; overflow-y:auto;">
+            <h3 style="font-size:16px; margin:0 0 16px; color:var(--accent2);" id="spModalTitle">New Search Config</h3>
+            <input type="hidden" id="spEditId" />
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Name</label>
+            <input type="text" id="spName" placeholder="e.g. Mobile Staff Remote" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); margin-bottom:12px; font-size:13px;" />
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Roles (comma-separated)</label>
+            <input type="text" id="spRoles" placeholder="Staff Mobile Engineer, Principal Android" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); margin-bottom:12px; font-size:13px;" />
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Work Mode</label>
+                    <select id="spWorkMode" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;">
+                        <option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Scan Depth</label>
+                    <select id="spScanDepth" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;">
+                        <option value="quick">Quick (~3s)</option><option value="deep">Deep (~20s)</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Location</label>
+                    <input type="text" id="spLocation" placeholder="Global" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;" />
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Min Salary ($)</label>
+                    <input type="number" id="spSalary" placeholder="Optional" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;" />
+                </div>
+            </div>
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Seniority Override</label>
+            <select id="spSeniority" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px; margin-bottom:12px;">
+                <option value="">Auto (from resume)</option><option value="junior">Junior</option><option value="mid">Mid</option><option value="senior">Senior</option><option value="staff">Staff</option><option value="principal">Principal</option>
+            </select>
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Exclude Keywords (comma-separated)</label>
+            <input type="text" id="spExclude" placeholder="e.g. intern, junior, contract" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); margin-bottom:16px; font-size:13px;" />
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+                <button onclick="SearchProfiles.hideModal()" style="padding:8px 16px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); cursor:pointer; font-size:13px;">Cancel</button>
+                <button onclick="SearchProfiles.save()" style="padding:8px 16px; border:none; border-radius:8px; background:var(--accent); color:white; cursor:pointer; font-size:13px; font-weight:600;">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="hero">
+        <div class="logo">&#x1f50d;</div>
+        <h1>Job Hunter</h1>
+        <p>AI-powered multi-agent job search. Upload your resume, tell us what you're looking for,<br>and our agents will find, score, and rank the best opportunities for you.</p>
+    </div>
+
+    <div class="card">
+        <button class="cancel-btn" id="cancelBtn" onclick="cancelPipeline()" style="display:none;" title="Cancel pipeline">&times;</button>
+        <form id="searchForm" enctype="multipart/form-data">
+            <!-- Step 1: Upload resume -->
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <label>Upload Your Resume</label>
+                    <div class="hint">PDF format. We'll parse your skills, experience, and background to match you with the right jobs.</div>
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" id="resumeFile" name="resume" accept=".pdf" />
+                        <div class="upload-icon">&#x1f4c4;</div>
+                        <div class="upload-text">Drag & drop your resume here, or <strong>click to browse</strong></div>
+                        <div class="file-name" id="fileName"></div>
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-weight:400; cursor:pointer; font-size:13px; color:var(--text2);">
+                        <input type="checkbox" id="deepScan" style="width:auto; margin:0; cursor:pointer;" />
+                        Deep scan — more accurate role matching, slower (~20s). Default is fast (~3s).
+                    </label>
+                </div>
+            </div>
+
+            <!-- Step 2: Desired roles (comma-separated) -->
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <label>What roles are you looking for?</label>
+                    <div class="hint">Comma-separated. Be specific — include seniority, domain, specialization.</div>
+                    <div id="scanStatus" style="display:none; margin-bottom:8px; padding:6px 10px; background:rgba(0,206,201,0.08); border-radius:8px; border:1px solid rgba(0,206,201,0.2);"></div>
+                    <input type="text" class="search-input" id="roleInput" name="desired_roles"
+                        placeholder="e.g. Staff Android Engineer, Senior AI/ML Engineer, Principal Mobile Architect"
+                        autocomplete="off" />
+                    <div class="suggestions">
+                        <span class="suggestion-chip" onclick="addRole(this)">Staff Android Engineer</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">Senior AI/ML Engineer</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">Mobile Engineer</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">Full Stack Developer</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">DevOps Engineer</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">Data Scientist</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">Product Manager</span>
+                        <span class="suggestion-chip" onclick="addRole(this)">Principal Engineer</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3: Work mode (multi-select) -->
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <label>Work Mode</label>
+                    <div class="hint">Select one or more. "Any" clears other selections.</div>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;" id="workModeGroup">
+                        <label class="mode-toggle active" data-value="remote">
+                            <span>&#x1f30d; Remote</span>
+                        </label>
+                        <label class="mode-toggle" data-value="hybrid">
+                            <span>&#x1f3e2; Hybrid</span>
+                        </label>
+                        <label class="mode-toggle" data-value="onsite">
+                            <span>&#x1f4cd; On-site</span>
+                        </label>
+                        <label class="mode-toggle" data-value="any">
+                            <span>&#x2699;&#xfe0f; Any</span>
+                        </label>
+                    </div>
+                    <input type="hidden" name="work_mode" id="workModeInput" value="remote" />
+                </div>
+            </div>
+
+            <!-- Step 4: Location -->
+            <div class="step">
+                <div class="step-num">4</div>
+                <div class="step-content">
+                    <label>Preferred Location</label>
+                    <div class="hint">Where you want to work. Leave "Anywhere" for global remote.</div>
+                    <input type="text" class="search-input" id="locationInput" name="location"
+                        placeholder="e.g. Anywhere, US, Europe, San Francisco"
+                        value="Anywhere" autocomplete="off" />
+                </div>
+            </div>
+
+            <!-- LLM Provider Toggle (dynamic — rendered by onboarding.js from /api/providers) -->
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding: 12px 16px; background: var(--surface2); border-radius: var(--radius); border: 1px solid var(--border); flex-wrap:wrap;">
+                <span style="font-size: 13px; color: var(--text2); flex-shrink: 0;">AI Engine:</span>
+                <div class="provider-toggle" id="providerToggle">
+                    <!-- buttons injected dynamically -->
+                </div>
+                <input type="hidden" name="llm_provider" id="providerInput" value="mlx" />
+                <span id="providerStatus" style="font-size:11px; color:var(--text2); margin-left:auto;"></span>
+            </div>
+
+            <button type="submit" class="launch-btn" id="launchBtn" disabled>
+                Launch Job Search Agents
+            </button>
+        </form>
+
+        <!-- Progress section (shown during search) -->
+        <div class="progress-section" id="progressSection">
+            <div class="progress-bar-track">
+                <div class="progress-bar-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-status" id="progressStatus">Initializing...</div>
+
+            <!-- Source ticker — visible only during scrape step -->
+            <div id="sourceTicker" style="display:none; margin: 14px 0 4px;">
+                <div style="font-size: 11px; color: var(--text2); margin-bottom: 8px; letter-spacing: 0.4px;">SOURCES SCRAPED</div>
+                <div id="sourceChips" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+            </div>
+
+            <div class="pipeline">
+                <div class="pipeline-step" id="pipe-parse"><span class="dot"></span> Parse Resume</div>
+                <div class="pipeline-connector" id="conn-1"></div>
+                <div class="pipeline-step" id="pipe-refine"><span class="dot"></span> Refine Search</div>
+                <div class="pipeline-connector" id="conn-2"></div>
+                <div class="pipeline-step" id="pipe-scrape"><span class="dot"></span> Scrape Jobs</div>
+                <div class="pipeline-connector" id="conn-3"></div>
+                <div class="pipeline-step" id="pipe-company"><span class="dot"></span> Review Companies</div>
+                <div class="pipeline-connector" id="conn-4"></div>
+                <div class="pipeline-step" id="pipe-match"><span class="dot"></span> Match & Rank</div>
+            </div>
+        </div>
+
+        <!-- Cloud API keys setup -->
+        <div class="api-setup">
+            <details>
+                <summary>&#x2699;&#xfe0f; Gemini API Key {% if api_key_set %}(configured){% else %}(optional){% endif %}</summary>
+                <p style="font-size:12px; color:var(--text2); margin-top:8px; line-height:1.6;">
+                    Free key from <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent2);">Google AI Studio</a>.
+                </p>
+                <div class="api-input-group">
+                    <input type="password" id="apiKeyInput" placeholder="AIza..." value="{{ api_key_masked }}" />
+                    <button class="api-save-btn" onclick="saveApiKey()">Save</button>
+                </div>
+                <div class="api-status" id="apiStatus">{% if api_key_set %}Key is configured{% endif %}</div>
+            </details>
+            <details style="margin-top:8px;">
+                <summary>&#x2699;&#xfe0f; Groq API Key (optional)</summary>
+                <p style="font-size:12px; color:var(--text2); margin-top:8px; line-height:1.6;">
+                    Free key from <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent2);">Groq Console</a>. Very fast inference.
+                </p>
+                <div class="api-input-group">
+                    <input type="password" id="groqKeyInput" placeholder="gsk_..." />
+                    <button class="api-save-btn" onclick="saveGroqKey()">Save</button>
+                </div>
+                <div class="api-status" id="groqStatus"></div>
+            </details>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>Powered by multi-agent AI &middot; <a href="https://github.com" target="_blank">Open Source</a></p>
+    </div>
+
+    <!-- Model → View data binding (server → JS) -->
+    <script>
+    window.__serverState = {
+        pipelineRunning: {{ 'true' if pipeline_running else 'false' }},
+        pipelineStatus: {{ pipeline_status | tojson if pipeline_status else '{}' }},
+    };
+    </script>
+
+    <!-- MVVM: Model (API) → ViewModel (logic) → View (this HTML) -->
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/users.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/search-profiles.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/onboarding.js') }}"></script>
+
+    <!-- Thin View bindings (bridge HTML onclick → ViewModel) -->
+    <script>
+    function togglePanel()      { UserPanel.toggle(); }
+    function addNewUser()       { UserPanel.addNewUser(); }
+    function deleteUser(id, n)  { UserPanel.deleteUser(id, n); }
+    function addRole(chip)      { OnboardingVM.addRole(chip); }
+    function setProvider(btn)   { OnboardingVM.setProvider(btn); }
+    function cancelPipeline()   { OnboardingVM.cancelPipeline(); }
+    function saveApiKey()       { OnboardingVM.saveApiKey(); }
+    function saveGroqKey()      { OnboardingVM.saveGroqKey(); }
+    </script>
+</body>
+</html>

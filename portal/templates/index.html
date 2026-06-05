@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Hunter — {{ profile.get('name', 'Dashboard') }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f0f13;
+            --surface: #1a1a24;
+            --surface2: #22222e;
+            --border: #2d2d3d;
+            --text: #e4e4ef;
+            --text2: #9999aa;
+            --accent: #6c5ce7;
+            --accent2: #a29bfe;
+            --green: #00cec9;
+            --orange: #fdcb6e;
+            --red: #e17055;
+            --blue: #74b9ff;
+            --pink: #fd79a8;
+            --radius: 12px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        .container { max-width: 1440px; margin: 0 auto; padding: 24px; }
+        header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            padding: 40px 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 32px;
+        }
+        header .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; }
+        .header-left h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
+        .header-left p { color: var(--text2); font-size: 14px; margin-top: 4px; }
+        .header-right { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        .stat-pill {
+            background: rgba(108, 92, 231, 0.15);
+            border: 1px solid rgba(108, 92, 231, 0.3);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .stat-pill strong { color: var(--accent2); }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, var(--accent), #5a4bd1);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .refresh-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4); }
+        .refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .refresh-btn .spinner {
+            width: 16px; height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            display: none;
+        }
+        .refresh-btn.loading .spinner { display: inline-block; animation: spin 0.8s linear infinite; }
+        .refresh-btn.loading .refresh-icon { display: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .refresh-toast {
+            position: fixed; top: 20px; right: 20px;
+            background: var(--surface); border: 1px solid var(--accent);
+            border-radius: var(--radius); padding: 16px 24px;
+            z-index: 1000; display: none; min-width: 300px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+        }
+        .refresh-toast.visible { display: block; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .toast-progress { height: 4px; background: var(--surface2); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+        .toast-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 2px; transition: width 0.5s ease; }
+
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
+        .kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; text-align: center; }
+        .kpi-card .value { font-size: 36px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .kpi-card .label { color: var(--text2); font-size: 13px; margin-top: 4px; }
+
+        .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 32px; }
+        .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+        .chart-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+        .chart-wrap { position: relative; height: 280px; }
+
+        .section-header { font-size: 20px; font-weight: 700; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--accent); display: inline-block; }
+
+        .filters { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+        .filter-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+        .filter-btn:hover, .filter-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+        .search-box { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: 20px; font-size: 14px; width: 300px; outline: none; }
+        .search-box:focus { border-color: var(--accent); }
+
+        .jobs-table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
+        .jobs-table thead { background: var(--surface2); }
+        .jobs-table th { padding: 14px 16px; text-align: left; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text2); cursor: pointer; user-select: none; white-space: nowrap; }
+        .jobs-table th:hover { color: var(--accent2); }
+        .jobs-table td { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 14px; vertical-align: top; }
+        .jobs-table tr:hover td { background: rgba(108, 92, 231, 0.05); }
+
+        .score-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; min-width: 45px; text-align: center; }
+        .score-high { background: rgba(0, 206, 201, 0.15); color: var(--green); }
+        .score-mid { background: rgba(253, 203, 110, 0.15); color: var(--orange); }
+        .score-low { background: rgba(225, 112, 85, 0.15); color: var(--red); }
+
+        .tag { display: inline-block; background: rgba(108, 92, 231, 0.12); color: var(--accent2); padding: 2px 8px; border-radius: 4px; font-size: 11px; margin: 1px 2px; }
+        .tag-contract { background: rgba(0, 206, 201, 0.15); color: var(--green); }
+        .tag-genai { background: rgba(253, 121, 168, 0.15); color: var(--pink); }
+        .tag-source { background: rgba(116, 185, 255, 0.15); color: var(--blue); }
+        .tag-seniority { font-weight: 600; }
+        .tag-staff { background: rgba(0, 206, 201, 0.2); color: var(--green); font-weight: 600; }
+        .tag-senior { background: rgba(253, 203, 110, 0.15); color: var(--orange); }
+        .tag-junior { background: rgba(225, 112, 85, 0.15); color: var(--red); }
+
+        .apply-btn, .gen-btn { display: inline-block; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: 500; transition: all 0.2s; white-space: nowrap; cursor: pointer; border: none; }
+        .apply-btn { background: var(--accent); color: white; }
+        .apply-btn:hover { background: var(--accent2); transform: translateY(-1px); }
+        .gen-resume-btn { background: rgba(0, 206, 201, 0.2); color: var(--green); border: 1px solid rgba(0, 206, 201, 0.3); }
+        .gen-resume-btn:hover { background: rgba(0, 206, 201, 0.35); }
+        .gen-cover-btn { background: rgba(253, 121, 168, 0.2); color: var(--pink); border: 1px solid rgba(253, 121, 168, 0.3); }
+        .gen-cover-btn:hover { background: rgba(253, 121, 168, 0.35); }
+        .source-link { color: var(--blue); text-decoration: none; font-size: 13px; }
+        .source-link:hover { text-decoration: underline; }
+
+        .skills-list { display: flex; flex-wrap: wrap; gap: 3px; max-width: 250px; }
+
+        .match-bar { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; margin-top: 4px; width: 80px; }
+        .match-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+
+        .expandable { cursor: pointer; }
+        .expand-row { display: none; }
+        .expand-row.visible { display: table-row; }
+        .expand-content { padding: 20px; background: var(--surface2); border-radius: 8px; }
+        .expand-content .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .detail-item label { font-size: 11px; color: var(--text2); text-transform: uppercase; }
+        .detail-item .val { font-size: 14px; margin-top: 2px; }
+        .expand-actions { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid var(--border); }
+
+        /* Modal */
+        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 2000; justify-content: center; align-items: center; backdrop-filter: blur(4px); }
+        .modal-overlay.visible { display: flex; }
+        .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; width: 90%; max-width: 960px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+        .modal-header h2 { font-size: 18px; }
+        .modal-close { background: none; border: none; color: var(--text2); font-size: 24px; cursor: pointer; padding: 4px; }
+        .modal-close:hover { color: var(--text); }
+        .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
+        .modal-tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--surface2); border-radius: 8px; padding: 4px; }
+        .modal-tab { flex: 1; padding: 10px; border: none; background: none; color: var(--text2); font-size: 14px; font-weight: 500; cursor: pointer; border-radius: 6px; transition: all 0.2s; }
+        .modal-tab.active { background: var(--accent); color: white; }
+
+        .iteration-timeline { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
+        .iteration-timeline h4 { color: var(--text2); font-size: 13px; text-transform: uppercase; margin-bottom: 12px; }
+        .iteration-item { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid rgba(45,45,61,0.5); }
+        .iter-badge { min-width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+        .iter-pass { background: rgba(0, 206, 201, 0.2); color: var(--green); }
+        .iter-fail { background: rgba(225, 112, 85, 0.2); color: var(--red); }
+        .iter-details { flex: 1; }
+        .iter-details .score { font-weight: 600; font-size: 14px; }
+        .iter-details .items { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+        .toolbar-row { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+        .print-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .print-btn:hover { background: var(--accent2); }
+        .copy-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+        .copy-btn:hover { border-color: var(--accent); color: var(--accent2); }
+
+        .score-chart-mini { display: flex; gap: 2px; align-items: flex-end; height: 40px; margin-top: 8px; }
+        .score-bar-mini { flex: 1; border-radius: 2px; min-width: 12px; transition: height 0.3s; }
+
+        /* Resume HTML container */
+        .resume-frame { background: white; border-radius: 8px; overflow: hidden; }
+        .resume-frame iframe { width: 100%; height: 600px; border: none; }
+
+        .loading-spinner { text-align: center; padding: 40px; color: var(--text2); }
+        .loading-spinner .dots::after { content: ''; animation: dots 1.5s steps(4, end) infinite; }
+        @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+
+        /* Cover letter display */
+        .doc-content { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 24px; font-family: 'Georgia', serif; font-size: 14px; line-height: 1.8; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+
+        .footer { text-align: center; padding: 32px 0; color: var(--text2); font-size: 13px; border-top: 1px solid var(--border); margin-top: 40px; }
+        /* ── Burger Menu ── */
+        .burger-menu {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        .burger-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: all 0.2s;
+        }
+        .burger-btn:hover { border-color: var(--accent); background: var(--surface2); }
+        .burger-btn .bar {
+            width: 20px;
+            height: 2px;
+            background: var(--text);
+            border-radius: 1px;
+            transition: all 0.3s;
+        }
+        .burger-btn.open .bar:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+        .burger-btn.open .bar:nth-child(2) { opacity: 0; }
+        .burger-btn.open .bar:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+        .user-panel {
+            position: fixed;
+            top: 0;
+            right: -360px;
+            width: 340px;
+            height: 100vh;
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            z-index: 999;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -8px 0 30px rgba(0,0,0,0.4);
+        }
+        .user-panel.open { right: 0; }
+        .user-panel-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .user-panel-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent2), var(--green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .user-panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .user-card {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .user-card:hover { border-color: var(--accent); }
+        .user-card.active {
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.1);
+        }
+        .user-card .user-name {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .user-card .user-meta {
+            font-size: 11px;
+            color: var(--text2);
+        }
+        .user-card .user-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+        .badge-active { background: rgba(0, 206, 201, 0.15); color: var(--green); }
+        .badge-running { background: rgba(108, 92, 231, 0.15); color: var(--accent2); }
+        .badge-results { background: rgba(253, 203, 110, 0.15); color: var(--orange); }
+        .user-delete {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            color: var(--text2);
+            font-size: 16px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s;
+            padding: 4px;
+        }
+        .user-card:hover .user-delete { opacity: 1; }
+        .user-delete:hover { color: var(--red); }
+
+        .add-user-btn {
+            width: 100%;
+            padding: 12px;
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            background: none;
+            color: var(--accent2);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 4px;
+        }
+        .add-user-btn:hover { border-color: var(--accent); background: rgba(108, 92, 231, 0.05); }
+
+        .user-panel-footer {
+            padding: 16px;
+            border-top: 1px solid var(--border);
+            font-size: 11px;
+            color: var(--text2);
+            text-align: center;
+        }
+
+        .panel-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 998;
+            display: none;
+            backdrop-filter: blur(2px);
+        }
+        .panel-overlay.visible { display: block; }
+
+        /* Search Profile cards */
+        .sp-card {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .sp-card:hover { border-color: var(--accent); }
+        .sp-card.active { border-color: var(--green); background: rgba(0, 206, 201, 0.08); }
+        .sp-card .sp-name { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+        .sp-card .sp-meta { font-size: 11px; color: var(--text2); }
+        .sp-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+        .sp-chip {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 500;
+            background: rgba(108, 92, 231, 0.12);
+            color: var(--accent2);
+        }
+        .sp-chip.mode { background: rgba(0, 206, 201, 0.12); color: var(--green); }
+        .sp-chip.loc { background: rgba(253, 203, 110, 0.12); color: var(--orange); }
+        .sp-card .sp-actions {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .sp-card:hover .sp-actions { opacity: 1; }
+        .sp-action-btn {
+            background: none;
+            border: none;
+            color: var(--text2);
+            font-size: 14px;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+        .sp-action-btn:hover { color: var(--accent); }
+        .sp-action-btn.delete:hover { color: var(--red); }
+
+        @media (max-width: 768px) {
+            .container { padding: 12px; }
+            .charts-grid { grid-template-columns: 1fr; }
+            .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+            .search-box { width: 100%; }
+            .modal { width: 95%; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Burger Menu & User Panel -->
+    <div class="burger-menu">
+        <button class="burger-btn" id="burgerBtn" onclick="togglePanel()">
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+        </button>
+    </div>
+
+    <div class="panel-overlay" id="panelOverlay" onclick="togglePanel()"></div>
+
+    <div class="user-panel" id="userPanel">
+        <div class="user-panel-header">
+            <h3>&#x1f465; Profiles</h3>
+            <span style="font-size:12px; color:var(--text2);" id="userCount"></span>
+        </div>
+        <div class="user-panel-body" id="userList"></div>
+        <div style="padding: 0 16px 16px;">
+            <button class="add-user-btn" onclick="addNewUser()">+ Add New Profile</button>
+        </div>
+
+        <!-- Search Profiles Section -->
+        <div style="border-top: 1px solid var(--border); padding: 16px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <h3 style="font-size:14px; font-weight:700; color:var(--accent2); margin:0;">&#x1f50d; Search Configs</h3>
+                <span style="font-size:11px; color:var(--text2);" id="spCount"></span>
+            </div>
+            <div id="searchProfileList"></div>
+            <button class="add-user-btn" onclick="SearchProfiles.showCreate()" style="margin-top:8px;">+ New Search Config</button>
+        </div>
+
+        <div class="user-panel-footer">
+            Each profile has its own resume. Each search config has its own roles, filters, and results.
+        </div>
+    </div>
+
+    <!-- Search Profile Create/Edit Modal -->
+    <div id="spModal" style="display:none; position:fixed; inset:0; z-index:1100; background:rgba(0,0,0,0.5); backdrop-filter:blur(2px); align-items:center; justify-content:center;">
+        <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; width:360px; max-height:80vh; overflow-y:auto;">
+            <h3 style="font-size:16px; margin:0 0 16px; color:var(--accent2);" id="spModalTitle">New Search Config</h3>
+            <input type="hidden" id="spEditId" />
+
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Name</label>
+            <input type="text" id="spName" placeholder="e.g. Mobile Staff Remote" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); margin-bottom:12px; font-size:13px;" />
+
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Roles (comma-separated)</label>
+            <input type="text" id="spRoles" placeholder="Staff Mobile Engineer, Principal Android" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); margin-bottom:12px; font-size:13px;" />
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Work Mode</label>
+                    <select id="spWorkMode" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;">
+                        <option value="remote">Remote</option>
+                        <option value="hybrid">Hybrid</option>
+                        <option value="onsite">On-site</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Scan Depth</label>
+                    <select id="spScanDepth" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;">
+                        <option value="quick">Quick (~3s)</option>
+                        <option value="deep">Deep (~20s)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Location</label>
+                    <input type="text" id="spLocation" placeholder="Global" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;" />
+                </div>
+                <div>
+                    <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Min Salary ($)</label>
+                    <input type="number" id="spSalary" placeholder="Optional" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px;" />
+                </div>
+            </div>
+
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Seniority Override</label>
+            <select id="spSeniority" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px; margin-bottom:12px;">
+                <option value="">Auto (from resume)</option>
+                <option value="junior">Junior</option>
+                <option value="mid">Mid</option>
+                <option value="senior">Senior</option>
+                <option value="staff">Staff</option>
+                <option value="principal">Principal</option>
+            </select>
+
+            <label style="font-size:12px; color:var(--text2); display:block; margin-bottom:4px;">Exclude Keywords (comma-separated)</label>
+            <input type="text" id="spExclude" placeholder="e.g. intern, junior, contract" style="width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); margin-bottom:16px; font-size:13px;" />
+
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+                <button onclick="SearchProfiles.hideModal()" style="padding:8px 16px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); cursor:pointer; font-size:13px;">Cancel</button>
+                <button onclick="SearchProfiles.save()" style="padding:8px 16px; border:none; border-radius:8px; background:var(--accent); color:white; cursor:pointer; font-size:13px; font-weight:600;">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <header>
+        <div class="container">
+            <div class="header-left">
+                <h1>&#x1f50d; Job Hunter</h1>
+                <p>{{ profile.get('name', 'Dashboard') }}{% if profile.get('title') %} — {{ profile.get('title') }}{% endif %}{% if search_context.get('desired_role') %} &middot; Looking for: <strong>{{ search_context.get('desired_role') }}</strong>{% endif %}</p>
+            </div>
+            <div class="header-right">
+                <span class="stat-pill"><strong>{{ total_jobs }}</strong> jobs found</span>
+                <span class="stat-pill"><strong>{{ stats.get('sources_queried', 0) }}</strong> sources</span>
+                <span class="stat-pill"><strong>{{ high_match }}</strong> high matches</span>
+                <span class="stat-pill" id="providerPills" style="padding:4px 6px; display:flex; gap:0; border-radius:8px; overflow:hidden;">
+                    <!-- providers rendered dynamically by DashboardVM -->
+                </span>
+                <button class="refresh-btn" id="refreshBtn" onclick="triggerRefresh()">
+                    <span class="refresh-icon">&#x21bb;</span>
+                    <span class="spinner"></span>
+                    Refresh Jobs
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <div class="refresh-toast" id="refreshToast">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="flex:1;">
+                <div style="font-weight: 600; font-size: 14px;" id="toastTitle">Refreshing...</div>
+                <div style="color: var(--text2); font-size: 13px; margin-top: 4px;" id="toastMessage">Starting agents...</div>
+            </div>
+            <button id="cancelRefreshBtn" onclick="cancelRefresh()" style="padding:4px 14px; background:transparent; color:#e74c3c; border:1px solid #e74c3c; border-radius:6px; cursor:pointer; font-size:12px; white-space:nowrap;">Cancel</button>
+        </div>
+        <div class="toast-progress"><div class="toast-progress-fill" id="toastProgress" style="width: 0%"></div></div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="docModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="modalTitle">Generated Document</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-tabs">
+                    <button class="modal-tab active" id="tabResume" onclick="switchTab('resume')">Tailored Resume</button>
+                    <button class="modal-tab" id="tabCover" onclick="switchTab('cover')">Cover Letter</button>
+                </div>
+                <div id="docLoading" class="loading-spinner" style="display:none;">
+                    <div style="font-size:32px; margin-bottom:12px;">&#x2699;</div>
+                    <div>Writer-Reviewer loop running<span class="dots"></span></div>
+                    <div style="font-size:12px; margin-top:4px;">5 iterations of write &#x2192; review &#x2192; refine</div>
+                </div>
+                <div id="docResult" style="display:none;">
+                    <div style="display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;">
+                        <div class="kpi-card" style="flex:1; min-width: 120px; padding: 12px;">
+                            <div class="value" style="font-size: 24px;" id="docScore">—</div>
+                            <div class="label">Final Score</div>
+                        </div>
+                        <div class="kpi-card" style="flex:1; min-width: 120px; padding: 12px;">
+                            <div class="value" style="font-size: 24px;" id="docIters">—</div>
+                            <div class="label">Iterations</div>
+                        </div>
+                        <div class="kpi-card" style="flex:1; min-width: 120px; padding: 12px;">
+                            <div class="score-chart-mini" id="scoreTimeline"></div>
+                            <div class="label">Score Progression</div>
+                        </div>
+                    </div>
+                    <div class="toolbar-row">
+                        <button class="print-btn" id="printBtn" onclick="printDoc()">&#x1F5A8; Print / Export PDF</button>
+                        <button class="copy-btn" onclick="copyDoc()">&#x2398; Copy to Clipboard</button>
+                    </div>
+                    <div id="resumeContainer" style="display:none;">
+                        <div class="resume-frame"><iframe id="resumeFrame" title="Resume"></iframe></div>
+                    </div>
+                    <div id="coverContainer" style="display:none;">
+                        <div class="doc-content" id="coverContent"></div>
+                    </div>
+                    <div class="iteration-timeline" id="iterTimeline"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="kpi-grid">
+            <div class="kpi-card"><div class="value">{{ total_jobs }}</div><div class="label">Total Jobs Found</div></div>
+            <div class="kpi-card"><div class="value">{{ avg_match }}%</div><div class="label">Avg Profile Match</div></div>
+            <div class="kpi-card"><div class="value">{{ avg_composite }}</div><div class="label">Avg Composite Score</div></div>
+            <div class="kpi-card"><div class="value">{{ contract_count }}</div><div class="label">Contract Roles</div></div>
+            <div class="kpi-card"><div class="value">{{ high_match }}</div><div class="label">High Match (60%+)</div></div>
+            <div class="kpi-card"><div class="value">{{ stats.get('sources_queried', 0) }}</div><div class="label">Sources Scoured</div></div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card"><h3>Match Score Distribution</h3><div class="chart-wrap"><canvas id="scoreChart"></canvas></div></div>
+            <div class="chart-card"><h3>Jobs by Source</h3><div class="chart-wrap"><canvas id="sourceChart"></canvas></div></div>
+            <div class="chart-card"><h3>Job Type Breakdown</h3><div class="chart-wrap"><canvas id="typeChart"></canvas></div></div>
+            <div class="chart-card"><h3>Salary Ranges</h3><div class="chart-wrap"><canvas id="salaryChart"></canvas></div></div>
+            <div class="chart-card" style="grid-column: span 2;"><h3>Top Matching Skills</h3><div class="chart-wrap"><canvas id="skillsChart"></canvas></div></div>
+        </div>
+
+        <!-- Source Quality Section -->
+        <h2 class="section-header">Source Quality &amp; Lead Conversion</h2>
+        <p style="color: var(--text2); font-size: 13px; margin-bottom: 16px;">Higher quality sources have better lead-to-opportunity conversion rates. Quality score weights 16% of the composite ranking.</p>
+
+        <div class="charts-grid">
+            <div class="chart-card" style="grid-column: span 2;"><h3>Source Quality vs Jobs Found</h3><div class="chart-wrap" style="height: 340px;"><canvas id="sourceQualityChart"></canvas></div></div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-bottom: 32px;">
+            {% for src, data in source_quality_data.items() %}
+            <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; align-items: center; gap: 14px;">
+                <div style="min-width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700;
+                    {% if data.quality >= 80 %}background: rgba(0,206,201,0.15); color: var(--green);
+                    {% elif data.quality >= 65 %}background: rgba(108,92,231,0.15); color: var(--accent2);
+                    {% elif data.quality >= 50 %}background: rgba(253,203,110,0.15); color: var(--orange);
+                    {% else %}background: rgba(225,112,85,0.12); color: var(--red);{% endif %}">
+                    {{ data.quality }}
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ src }}</div>
+                    <div style="font-size: 11px; color: var(--text2);">{{ data.count }} jobs &middot; Avg score {{ data.avg_composite }}</div>
+                    <div style="height: 4px; background: var(--surface2); border-radius: 2px; margin-top: 6px; overflow: hidden;">
+                        <div style="height: 100%; border-radius: 2px; width: {{ data.quality }}%;
+                            {% if data.quality >= 80 %}background: var(--green);
+                            {% elif data.quality >= 65 %}background: var(--accent);
+                            {% elif data.quality >= 50 %}background: var(--orange);
+                            {% else %}background: var(--red);{% endif %}"></div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- ── Manage Sources ───────────────────────────────────── -->
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+            <h2 class="section-header" style="margin-bottom: 0;">Manage Sources</h2>
+            <button onclick="SourcesVM.openAddModal()" style="padding: 8px 18px; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">+ Add Source</button>
+        </div>
+        <p style="color: var(--text2); font-size: 13px; margin-bottom: 16px;">Add custom RSS feeds or API endpoints to scrape alongside the built-in 26 sources.</p>
+
+        <div id="customSourcesList" style="margin-bottom: 32px;">
+            <!-- Populated by SourcesVM -->
+            <div style="color: var(--text2); font-size: 13px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">Loading sources...</div>
+        </div>
+
+        <!-- Add Source Modal -->
+        <div id="addSourceModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+            <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; width: 480px; max-width: 95vw;">
+                <h3 style="margin-bottom: 20px; font-size: 16px;">Add Job Source</h3>
+
+                <div style="display: flex; flex-direction: column; gap: 14px;">
+                    <div>
+                        <label style="font-size: 12px; color: var(--text2); display: block; margin-bottom: 6px;">Source Name *</label>
+                        <input id="srcName" type="text" placeholder="e.g. My Company Board" style="width: 100%; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 12px; color: var(--text2); display: block; margin-bottom: 6px;">Feed / API URL *</label>
+                        <input id="srcUrl" type="url" placeholder="https://example.com/jobs.rss" style="width: 100%; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px;">
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div>
+                            <label style="font-size: 12px; color: var(--text2); display: block; margin-bottom: 6px;">Source Type</label>
+                            <select id="srcType" style="width: 100%; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px;">
+                                <option value="rss">RSS Feed</option>
+                                <option value="json_api">JSON API</option>
+                                <option value="web">Web Scrape</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: var(--text2); display: block; margin-bottom: 6px;">Quality Score (0–100)</label>
+                            <input id="srcQuality" type="number" min="0" max="100" value="60" style="width: 100%; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px;">
+                        </div>
+                    </div>
+                </div>
+
+                <div id="addSourceError" style="display:none; color: var(--red); font-size: 12px; margin-top: 12px;"></div>
+
+                <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                    <button onclick="SourcesVM.closeAddModal()" style="padding: 9px 18px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); cursor: pointer; font-size: 13px;">Cancel</button>
+                    <button onclick="SourcesVM.addSource()" style="padding: 9px 18px; background: var(--accent); border: none; border-radius: 8px; color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;">Add Source</button>
+                </div>
+            </div>
+        </div>
+
+        <h2 class="section-header">Job Listings (Ranked by Composite Score)</h2>
+
+        <div class="filters">
+            <input type="text" class="search-box" id="searchInput" placeholder="Search jobs, companies, skills...">
+            <button class="filter-btn active" onclick="filterJobs('all', this)">All</button>
+            <button class="filter-btn" onclick="filterJobs('contract', this)">Contract</button>
+            <button class="filter-btn" onclick="filterJobs('genai', this)">GenAI/AI</button>
+            <button class="filter-btn" onclick="filterJobs('mobile', this)">Mobile</button>
+            <button class="filter-btn" onclick="filterJobs('staff', this)">Staff+</button>
+            <button class="filter-btn" onclick="filterJobs('high-match', this)">High Match (60%+)</button>
+        </div>
+
+        <table class="jobs-table" id="jobsTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">#</th>
+                    <th onclick="sortTable(1)">Job Title</th>
+                    <th onclick="sortTable(2)">Company</th>
+                    <th onclick="sortTable(3)">Match %</th>
+                    <th onclick="sortTable(4)">Composite</th>
+                    <th>Level</th>
+                    <th onclick="sortTable(6)">Salary</th>
+                    <th>Type</th>
+                    <th>Skills Matched</th>
+                    <th>Apply</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                <tr class="expandable job-row"
+                    data-type="{{ job.job_type|lower|replace('full time','full-time')|replace('fulltime','full-time')|replace('part time','part-time')|replace('parttime','part-time') }}"
+                    data-match="{{ job.match_score }}"
+                    data-skills="{{ job.skill_matches|join(',') }}"
+                    data-seniority="{{ job.seniority_level|default('Unknown') }}"
+                    data-idx="{{ loop.index }}"
+                    onclick="toggleExpand({{ loop.index }})">
+                    <td>{{ job.rank }}</td>
+                    <td>
+                        <strong>{{ job.job_title }}</strong><br>
+                        <span style="color: var(--text2); font-size: 12px;">{{ job.source }} · {{ job.location }}</span>
+                    </td>
+                    <td>
+                        {{ job.company }}
+                        {% if company_reviews.get(job.company) %}
+                        <br><span style="font-size:12px; color:var(--text2)">&#x2605; {{ company_reviews[job.company].overall_rating }}/5</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="score-badge {% if job.match_score >= 60 %}score-high{% elif job.match_score >= 35 %}score-mid{% else %}score-low{% endif %}">
+                            {{ job.match_score }}%
+                        </span>
+                        <div class="match-bar"><div class="match-bar-fill" style="width:{{ job.match_score }}%; background:{% if job.match_score >= 60 %}var(--green){% elif job.match_score >= 35 %}var(--orange){% else %}var(--red){% endif %};"></div></div>
+                    </td>
+                    <td>
+                        <span class="score-badge {% if job.composite_score >= 60 %}score-high{% elif job.composite_score >= 35 %}score-mid{% else %}score-low{% endif %}">
+                            {{ job.composite_score }}
+                        </span>
+                    </td>
+                    <td>
+                        {% set lvl = job.seniority_level|default('Unknown') %}
+                        <span class="tag tag-seniority {% if 'Staff' in lvl or 'Principal' in lvl %}tag-staff{% elif 'Senior' in lvl %}tag-senior{% elif 'Junior' in lvl or 'Mid' in lvl %}tag-junior{% endif %}">
+                            {{ lvl }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if job.salary_max > 0 %}${{ "{:,.0f}".format(job.salary_min) }} - ${{ "{:,.0f}".format(job.salary_max) }}
+                        {% else %}<span style="color:var(--text2)">—</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if 'contract' in job.job_type|lower or 'freelance' in job.job_type|lower %}
+                            <span class="tag tag-contract">{{ job.job_type }}</span>
+                        {% else %}
+                            <span class="tag">{{ job.job_type }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="skills-list">
+                            {% for skill in job.skill_matches[:5] %}
+                                <span class="tag {% if skill in ['generative ai','genai','llm','agentic ai','ai agents','machine learning'] %}tag-genai{% endif %}">{{ skill }}</span>
+                            {% endfor %}
+                            {% if job.skill_matches|length > 5 %}<span class="tag">+{{ job.skill_matches|length - 5 }}</span>{% endif %}
+                        </div>
+                    </td>
+                    <td onclick="event.stopPropagation()">
+                        {% if job.job_url %}
+                            <a href="{{ job.job_url }}" target="_blank" class="gen-btn apply-btn">Apply &#x2197;</a>
+                        {% else %}
+                            <span class="tag tag-source">Via {{ job.source }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr class="expand-row" id="expand-{{ loop.index }}">
+                    <td colspan="10">
+                        <div class="expand-content">
+                            {% if job.llm_reasoning %}
+                            <div style="background:rgba(212,169,106,0.08); border-left:3px solid #d4a96a; border-radius:6px; padding:12px 16px; margin-bottom:14px;">
+                                <div style="font-size:11px; font-weight:700; color:#d4a96a; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">AI Headhunter Recommendation</div>
+                                <div style="font-size:13px; color:var(--text1); line-height:1.6;">{{ job.llm_reasoning }}</div>
+                                {% if job.llm_strengths %}
+                                <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">
+                                    {% for s in job.llm_strengths %}
+                                    <span class="tag" style="background:rgba(0,206,158,0.12); color:var(--green); font-size:11px;">{{ s }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                                {% if job.llm_gaps %}
+                                <div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;">
+                                    {% for g in job.llm_gaps %}
+                                    <span class="tag" style="background:rgba(225,112,85,0.10); color:var(--red); font-size:11px;">{{ g }}</span>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                            <div class="detail-grid">
+                                <div class="detail-item">
+                                    <label>Strengths</label>
+                                    <div class="val">{% for s in job.strengths %}<span class="tag" style="margin:2px 0; display:inline-block;">{{ s }}</span>{% endfor %}</div>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Skill Gaps</label>
+                                    <div class="val">
+                                        {% for g in job.skill_gaps %}<span class="tag" style="background:rgba(225,112,85,0.12); color:var(--red);">{{ g }}</span>{% endfor %}
+                                        {% if not job.skill_gaps %}<span style="color:var(--green);">None detected</span>{% endif %}
+                                    </div>
+                                </div>
+                                <div class="detail-item"><label>Contract Bonus</label><div class="val">+{{ job.contract_bonus }}</div></div>
+                                <div class="detail-item"><label>GenAI/Mobile Bonus</label><div class="val">+{{ job.genai_mobile_bonus }}</div></div>
+                                <div class="detail-item"><label>Seniority Score</label><div class="val">{{ job.seniority_score }}/100</div></div>
+                                <div class="detail-item"><label>Company Rating</label><div class="val">{{ job.company_rating }}/5</div></div>
+                                <div class="detail-item"><label>Source Quality</label><div class="val"><span style="font-weight:700; color:{% if job.source_quality|default(50) >= 80 %}var(--green){% elif job.source_quality|default(50) >= 65 %}var(--accent2){% elif job.source_quality|default(50) >= 50 %}var(--orange){% else %}var(--red){% endif %};">{{ job.source_quality|default(50) }}/100</span> — {{ job.source }}</div></div>
+                            </div>
+                            <div class="expand-actions" onclick="event.stopPropagation()">
+                                {% if not job.job_url %}
+                                    <a href="https://www.google.com/search?q={{ (job.job_title ~ ' ' ~ job.company ~ ' careers apply')|urlencode }}" target="_blank" class="gen-btn apply-btn">Search on Google &#x2197;</a>
+                                {% else %}
+                                    <a href="{{ job.job_url }}" target="_blank" class="gen-btn apply-btn">Apply &#x2197;</a>
+                                {% endif %}
+                                <button class="gen-btn gen-resume-btn" onclick="generateResume({{ loop.index0 }})">&#x1f4c4; Tailored Resume</button>
+                                <button class="gen-btn gen-cover-btn" onclick="generateCover({{ loop.index0 }})">&#x2709; Cover Letter</button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if not jobs %}
+        <div style="text-align:center; padding:60px; color:var(--text2);">
+            <p style="font-size:18px;">No jobs found yet. Click Refresh Jobs to start.</p>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Job Hunter — AI-Powered Multi-Agent Job Search</p>
+            <p>{{ total_jobs }} listings from {{ stats.get('sources_queried', 0) }} platforms · Last updated: {{ stats.get('timestamp', 'N/A') }}</p>
+        </div>
+    </div>
+
+    <!-- Model → View data binding (server → JS) -->
+    <script>
+    window.__serverState = {
+        pipelineRunning: {{ 'true' if pipeline_running else 'false' }},
+        pipelineMessage: '{{ pipeline_status.message|default("Pipeline running...")|e }}',
+        pipelineProgress: {{ pipeline_status.progress|default(0) }},
+    };
+    window.__dashboardData = {
+        jobs: {{ jobs|tojson }},
+        scoreDistribution: {{ score_distribution|tojson }},
+        sourceCounts: {{ source_counts|tojson }},
+        typeCounts: {{ type_counts|tojson }},
+        salaryRanges: {{ salary_ranges|tojson }},
+        topSkills: {{ top_skills|tojson }},
+        sourceQualityData: {{ source_quality_data|tojson }},
+        profile: {{ profile|tojson }},
+    };
+    </script>
+
+    <!-- MVVM: Model (API) → ViewModel (logic) → View (this HTML) -->
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/users.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/resume-builder.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/search-profiles.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+
+    <!-- Thin View bindings (bridge HTML onclick → ViewModel) -->
+    <script>
+    function togglePanel()          { UserPanel.toggle(); }
+    function addNewUser()           { UserPanel.addNewUser(); }
+    function deleteUser(id, n)      { UserPanel.deleteUser(id, n); }
+    function switchProvider(p)      { DashboardVM.switchProvider(p); }
+    function triggerRefresh()       { DashboardVM.triggerRefresh(); }
+    function cancelRefresh()        { DashboardVM.cancelRefresh(); }
+    function toggleExpand(i)        { DashboardVM.toggleExpand(i); }
+    function filterJobs(t, b)       { DashboardVM.filterJobs(t, b); }
+    function sortTable(c)           { DashboardVM.sortTable(c); }
+    function generateResume(i)      { DashboardVM.generateResume(i); }
+    function generateCover(i)       { DashboardVM.generateCover(i); }
+    function switchTab(t)           { DashboardVM.switchTab(t); }
+    function closeModal()           { DashboardVM.closeModal(); }
+    function printDoc()             { DashboardVM.printDoc(); }
+    function copyDoc()              { DashboardVM.copyDoc(); }
+    </script>
+</body>
+</html>
