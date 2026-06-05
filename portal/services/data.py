@@ -59,7 +59,15 @@ def save_results(results: dict, user_id: str | None = None):
 
 
 def load_profile(user_id: str | None = None) -> dict:
-    return _load_json(user_id, "profile.json", {})
+    """Load profile.json. Backfills `domain` from scan_result.json when missing
+    so existing profiles created before the domain field was carried through
+    still benefit from non-tech bias filtering on refresh."""
+    profile = _load_json(user_id, "profile.json", {})
+    if profile and not profile.get("domain"):
+        scan = _load_json(user_id, "scan_result.json", {})
+        if scan.get("domain"):
+            profile["domain"] = scan["domain"]
+    return profile
 
 
 def save_profile(profile: dict, user_id: str | None = None):

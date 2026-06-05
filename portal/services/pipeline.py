@@ -94,6 +94,10 @@ def _scan_to_profile(scan: dict) -> dict:
         "phone": scan.get("phone", ""),
         "primary_skills": scan.get("primary_skills", []),
         "domain_keywords": scan.get("domain_keywords", []),
+        # Carry the candidate's domain through so JDReviewerAgent and
+        # JobSearchAgent.filter_scrapers_by_profile() see it. Was previously
+        # dropped here, which is why CA profiles still got tech-only scrapers.
+        "domain": scan.get("domain", ""),
         "companies_worked": scan.get("companies_worked", []),
         "experience_entries": scan.get("experience_entries", []),
         "education": scan.get("education", []),
