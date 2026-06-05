@@ -30,6 +30,16 @@ from bs4 import BeautifulSoup
 #   - India-remote friendliness
 #   - Community reputation for actual hires
 SOURCE_QUALITY = {
+    # JobSpy-aggregated labels — same underlying boards, distinct labels so
+    # dedup logic can still merge by URL while keeping origin visible.
+    "Indeed (JobSpy)":        85,
+    "LinkedIn (JobSpy)":      94,
+    "Glassdoor (JobSpy)":     72,
+    "Google Jobs (JobSpy)":   78,
+    "ZipRecruiter (JobSpy)":  70,
+    "Naukri (JobSpy)":        78,
+    "Bayt (JobSpy)":          60,
+    "BDJobs (JobSpy)":        55,
     # Tier 1: Highest conversion — direct employer postings, high response
     "LinkedIn":         92,  # #1 globally, direct recruiter contact, InMail
     "Wellfound":        88,  # Startup founders post directly, quick response
@@ -2047,6 +2057,182 @@ class TruelancerScraper(AutoHealingScraper):
         )
 
 
+# ─── JobSpy adapter ────────────────────────────────────────────────
+# Wraps speedyapply/JobSpy (https://github.com/speedyapply/JobSpy) which
+# aggregates LinkedIn, Indeed, Glassdoor, Google, ZipRecruiter, Bayt, Naukri,
+# BDJobs in one call. Optional — gated import so the rest of the pipeline still
+# runs if the package isn't installed (e.g. on Python 3.9 where JobSpy is
+# unavailable).
+
+try:
+    from jobspy import scrape_jobs as _jobspy_scrape  # type: ignore
+    _JOBSPY_AVAILABLE = True
+except Exception:  # ImportError or any transitive failure
+    _jobspy_scrape = None
+    _JOBSPY_AVAILABLE = False
+
+
+class JobSpyScraper(AutoHealingScraper):
+    """Generic, profession-agnostic scraper backed by JobSpy.
+
+    Runs ONE jobspy.scrape_jobs() call across multiple boards and yields
+    JobListings tagged with the originating site. Inherits AutoHealingScraper
+    stats/timing instrumentation so the orchestrator's reporting still works.
+    """
+
+    # JobSpy site IDs available in v1.1+. Keep this conservative — Glassdoor
+    # and ZipRecruiter sometimes return 403 from headless requests; we include
+    # them but JobSpy's retry/proxy logic handles failures gracefully.
+    DEFAULT_SITES = ["indeed", "linkedin", "glassdoor", "google", "zip_recruiter"]
+    INDIA_SITES = ["indeed", "linkedin", "naukri", "google"]
+    DEFAULT_RESULTS_PER_SITE = 30
+    DEFAULT_HOURS_OLD = 168  # 1 week
+
+    def __init__(
+        self,
+        name: str = "JobSpy",
+        sites=None,
+        results_wanted: int = DEFAULT_RESULTS_PER_SITE,
+        hours_old: int = DEFAULT_HOURS_OLD,
+        country_indeed: str = "USA",
+        applicant_location: str = "",
+    ):
+        super().__init__(name)
+        self.sites = sites or list(self.DEFAULT_SITES)
+        self.results_wanted = results_wanted
+        self.hours_old = hours_old
+        self.country_indeed = country_indeed
+        self.applicant_location = applicant_location
+
+    def is_available(self) -> bool:
+        return _JOBSPY_AVAILABLE
+
+    def scrape(self, keywords: list) -> list[JobListing]:
+        if not _JOBSPY_AVAILABLE:
+            print("  ⚠️  JobSpy not installed (pip install python-jobspy on Python 3.10+). Skipping.", flush=True)
+            return []
+
+        # Build the search term from the candidate's filter keywords. JobSpy
+        # takes a single string per call — we join the most distinctive ones so
+        # the query stays specific (Indeed/LinkedIn both fuzzy-match the rest).
+        search_term = " ".join(k for k in keywords[:4] if isinstance(k, str) and k.strip())
+        if not search_term:
+            return []
+
+        # Compose a Google site-search query — this is the main hook for
+        # non-LinkedIn boards on JobSpy.
+        google_q = f"{search_term} jobs"
+        if self.applicant_location:
+            google_q += f" in {self.applicant_location}"
+
+        try:
+            self.stats["attempts"] += 1
+            df = _jobspy_scrape(
+                site_name=self.sites,
+                search_term=search_term,
+                google_search_term=google_q,
+                location=self.applicant_location or None,
+                results_wanted=self.results_wanted,
+                hours_old=self.hours_old,
+                country_indeed=self.country_indeed,
+                verbose=0,
+            )
+            self.stats["successes"] += 1
+        except Exception as e:
+            self.stats["failures"] += 1
+            print(f"  ❌ JobSpy scrape failed: {e}", flush=True)
+            return []
+
+        if df is None or len(df) == 0:
+            return []
+
+        return self._df_to_listings(df)
+
+    def _df_to_listings(self, df):
+        """Convert a JobSpy DataFrame into our JobListing dataclass."""
+        listings = []
+        # Iterate over rows as dicts so missing columns don't crash on .iloc.
+        for _, row in df.iterrows():
+            try:
+                title = str(row.get("title") or "").strip()
+                company = str(row.get("company") or "").strip()
+                if not title or not company:
+                    continue
+
+                # JobSpy column names: site, title, company, location,
+                # job_type, interval, min_amount, max_amount, currency,
+                # is_remote, job_url, job_url_direct, date_posted,
+                # description, etc.
+                site = str(row.get("site") or "").lower()
+                source_label = {
+                    "indeed": "Indeed (JobSpy)",
+                    "linkedin": "LinkedIn (JobSpy)",
+                    "glassdoor": "Glassdoor (JobSpy)",
+                    "google": "Google Jobs (JobSpy)",
+                    "zip_recruiter": "ZipRecruiter (JobSpy)",
+                    "naukri": "Naukri (JobSpy)",
+                    "bayt": "Bayt (JobSpy)",
+                    "bdjobs": "BDJobs (JobSpy)",
+                }.get(site, f"JobSpy:{site}")
+
+                loc = row.get("location")
+                location_str = "" if loc is None else str(loc).strip()
+                job_type_str = str(row.get("job_type") or "").lower()
+                # Normalize JobSpy's job types to ours.
+                jt_norm = ""
+                if "contract" in job_type_str or "freelance" in job_type_str:
+                    jt_norm = "contract"
+                elif "part" in job_type_str:
+                    jt_norm = "part-time"
+                elif "intern" in job_type_str:
+                    jt_norm = "internship"
+                elif job_type_str:
+                    jt_norm = "full-time"
+
+                desc = str(row.get("description") or "").strip()
+                url = str(row.get("job_url_direct") or row.get("job_url") or "").strip()
+                if not url:
+                    continue
+
+                sal_min = float(row.get("min_amount") or 0) or 0
+                sal_max = float(row.get("max_amount") or 0) or 0
+                currency = str(row.get("currency") or "USD").upper()[:3]
+                is_remote = bool(row.get("is_remote", False))
+                date_posted = str(row.get("date_posted") or "").strip()
+
+                tags = []
+                if jt_norm:
+                    tags.append(jt_norm)
+                if is_remote:
+                    tags.append("remote")
+
+                salary_str = ""
+                if sal_min or sal_max:
+                    salary_str = f"{currency} {int(sal_min):,} - {int(sal_max):,}"
+
+                listings.append(JobListing(
+                    title=title,
+                    company=company,
+                    location=location_str or ("Remote" if is_remote else ""),
+                    salary=salary_str,
+                    job_type=jt_norm or "",
+                    description=desc[:5000],  # cap to keep DB rows reasonable
+                    url=url,
+                    source=source_label,
+                    tags=tags,
+                    posted_date=date_posted,
+                    remote=is_remote,
+                    region="Global" if is_remote else "",
+                    currency=currency,
+                    salary_min=sal_min,
+                    salary_max=sal_max,
+                ))
+            except Exception as e:
+                print(f"  ⚠️ JobSpy row parse error: {e}", flush=True)
+                continue
+        return listings
+
+
 # ─── Orchestrator ──────────────────────────────────────────────────
 
 
@@ -2059,6 +2245,9 @@ class JobSearchAgent:
     # candidates (a Chartered Accountant should not be searched on Arc.dev
     # or GunIO — those return only engineering jobs).
     SCRAPER_CATEGORIES = {
+        # JobSpy aggregator — covers Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter
+        # in one call. Marked "general" so non-tech profiles still benefit.
+        "JobSpy": {"general"},
         # Major general-purpose platforms
         "LinkedIn": {"general"},
         "Indeed": {"general"},
@@ -2092,6 +2281,10 @@ class JobSearchAgent:
 
     def __init__(self):
         self.scrapers = [
+            # ── JobSpy aggregator (Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter
+            #    + Naukri/Bayt/BDJobs on demand). Optional — silently skips
+            #    when python-jobspy isn't installed (e.g. Python 3.9 envs).
+            JobSpyScraper(),
             # ── Major Platforms (highest conversion) ──
             LinkedInScraper(),
             IndeedScraper(),

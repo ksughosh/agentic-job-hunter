@@ -385,6 +385,17 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
         applicant_location = "india"
 
     scraper = JobSearchAgent()
+    # Configure the JobSpy aggregator with the candidate's actual location
+    # (and a country hint for Indeed) so its results aren't biased toward US.
+    from agents.job_scraper import JobSpyScraper
+    for s in scraper.scrapers:
+        if isinstance(s, JobSpyScraper):
+            s.applicant_location = profile.get("location", "") or ""
+            if applicant_location == "india":
+                s.sites = list(JobSpyScraper.INDIA_SITES)
+                s.country_indeed = "India"
+            break
+
     # Skip tech-only scrapers (Arc.dev, GunIO, RemoteOK, etc.) when the
     # candidate's domain is non-tech. Those scrapers hardcode "/software-engineer"
     # URL paths and would otherwise return only engineering jobs for a CA,

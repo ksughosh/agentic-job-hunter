@@ -79,6 +79,18 @@ info "Python $PYTHON_VERSION detected"
 pip3 install -r "$PROJECT_DIR/requirements.txt" --quiet 2>/dev/null
 ok "Dependencies installed"
 
+# JobSpy hint — adds Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter/Naukri
+# aggregation in one call. Skipped automatically on Python 3.9.
+if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>/dev/null; then
+    if python3 -c "import jobspy" 2>/dev/null; then
+        ok "JobSpy aggregator available"
+    else
+        warn "JobSpy not installed. For richer Indeed/LinkedIn/Glassdoor/Google coverage: pip3 install python-jobspy"
+    fi
+else
+    warn "Python 3.10+ recommended for JobSpy aggregator (Indeed/LinkedIn/Glassdoor/Google in one call)"
+fi
+
 # ─── Step 2: Database configuration ──────────────────────────────
 
 step 2 "Database configuration"
