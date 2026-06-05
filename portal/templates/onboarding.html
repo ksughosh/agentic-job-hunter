@@ -840,10 +840,10 @@
     </script>
 
     <!-- MVVM: Model (API) → ViewModel (logic) → View (this HTML) -->
-    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/users.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/search-profiles.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/onboarding.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/api.js') }}?v={{ asset_v }}"></script>
+    <script src="{{ url_for('static', filename='js/users.js') }}?v={{ asset_v }}"></script>
+    <script src="{{ url_for('static', filename='js/search-profiles.js') }}?v={{ asset_v }}"></script>
+    <script src="{{ url_for('static', filename='js/onboarding.js') }}?v={{ asset_v }}"></script>
 
     <!-- Thin View bindings (bridge HTML onclick → ViewModel) -->
     <script>

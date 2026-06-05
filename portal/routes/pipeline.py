@@ -39,16 +39,23 @@ def scan_resume():
         from agents.resume_scanner import fast_scan_resume
         raw_text = extract_text_from_pdf(resume_path)
         if not raw_text:
-            return jsonify({"ok": False, "message": "Could not read PDF."})
+            return jsonify({"ok": False, "message": "Could not read PDF. Is the file empty or scanned without OCR?"})
 
         if deep:
             # DEEP scan (sync) — full profile incl. experience + education.
+            print(f"[ScanResume] deep scan starting for uid={uid}", flush=True)
             result = fast_scan_resume(raw_text, mode="full")
+            if not result or not result.get("name"):
+                return jsonify({"ok": False, "message": "Deep scan returned no profile. Check that the active LLM provider is configured and reachable (see Settings)."})
             data_svc.save_scan_result(result, uid)
+            print(f"[ScanResume] deep scan ok for uid={uid}: name={result.get('name')}, roles={len(result.get('recommended_roles', []))}", flush=True)
             return jsonify({"ok": True, "mode": "deep", **result})
 
         # QUICK scan (sync) — minimal JSON, returns chips fast (~3s).
+        print(f"[ScanResume] quick scan starting for uid={uid}", flush=True)
         result = fast_scan_resume(raw_text, mode="quick")
+        if not result or not result.get("name"):
+            return jsonify({"ok": False, "message": "Quick scan returned no profile. Check that the active LLM provider is configured and reachable (see Settings)."})
 
         # Cache the quick result immediately so the pipeline can start even
         # before the full scan finishes.
