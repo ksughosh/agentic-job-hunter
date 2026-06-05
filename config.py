@@ -28,9 +28,6 @@ CANDIDATE_PROFILE = {
     "languages": ["English"],
 }
 
-JOB_SEARCH_QUERIES = [
-    "remote software engineer",
-    "remote developer",
-]
+JOB_SEARCH_QUERIES = []  # populated at runtime from the candidate's profile
 
 TARGET_REGIONS = ["US", "Europe", "Australia", "Global", "Remote"]

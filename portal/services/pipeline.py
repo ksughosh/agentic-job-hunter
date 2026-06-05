@@ -381,13 +381,30 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
         applicant_location = "india"
 
     scraper = JobSearchAgent()
+    # Skip tech-only scrapers (Arc.dev, GunIO, RemoteOK, etc.) when the
+    # candidate's domain is non-tech. Those scrapers hardcode "/software-engineer"
+    # URL paths and would otherwise return only engineering jobs for a CA,
+    # marketer, lawyer, etc.
+    profile_domain = (profile.get("domain") or "").strip()
+    scraper.scrapers = JobSearchAgent.filter_scrapers_by_profile(scraper.scrapers, profile_domain)
     total_sources = len(scraper.scrapers)
+    if profile_domain:
+        print(f"  🎯 Scrapers filtered for domain '{profile_domain}': {total_sources} active", flush=True)
 
     stopwords = {"the", "and", "for", "with", "from", "remote", "hybrid", "onsite"}
     filter_keywords = list({
         w for q in search_queries for w in q.lower().split()
         if len(w) > 2 and w not in stopwords
-    })[:30] or ["engineer", "developer", "software"]
+    })[:30]
+    # Fallback to profile-derived keywords (NOT a hardcoded engineering list).
+    # An empty list lets the scraper return everything; downstream LLM matching
+    # will rank correctly against the candidate's actual profile.
+    if not filter_keywords:
+        filter_keywords = [
+            w.lower() for w in (profile.get("primary_skills") or [])
+            + (profile.get("domain_keywords") or [])
+            if isinstance(w, str) and len(w) > 2
+        ][:30]
 
     # Build cancel event from pipeline cancel flag
     cancel_event = threading.Event()
@@ -456,8 +473,8 @@ def _filter_seniority(jobs: list, years_exp: int) -> list:
 
     JUNIOR_PATTERNS = [
         r"\bjunior\b", r"\bjr\.?\b", r"\bentry[\s-]?level\b",
-        r"\bintern\b", r"\bassociate\s+(software|developer|engineer)\b",
-        r"\bgraduate\b", r"\bfresher\b",
+        r"\bintern\b", r"\bassociate\b",
+        r"\bgraduate\b", r"\bfresher\b", r"\btrainee\b",
     ]
     # For 10+ year candidates, also drop "mid-level" explicit tags
     MID_PATTERNS = [
@@ -654,7 +671,9 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
         remaining = []
 
     # ── LLM JD matching (parallel for local, sequential for cloud rate limits) ──
-    agent = JDReviewerAgent(use_llm=True, search_context=search_context)
+    # Pass profile so the reviewer's TF-IDF corpus and skill buckets are built
+    # from THIS candidate's resume, not a baked-in template.
+    agent = JDReviewerAgent(use_llm=True, search_context=search_context, profile=profile)
     cancel_event = threading.Event()
 
     def on_progress(done, total):
@@ -677,7 +696,7 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
 
     # For remaining jobs (heuristic-only), create lightweight results without LLM
     if remaining:
-        no_llm_agent = JDReviewerAgent(use_llm=False, search_context=search_context)
+        no_llm_agent = JDReviewerAgent(use_llm=False, search_context=search_context, profile=profile)
         _set(user_id, f"Scoring {len(remaining)} remaining jobs (heuristic)...", 88)
         for j in remaining:
             company = j.get("company", "")

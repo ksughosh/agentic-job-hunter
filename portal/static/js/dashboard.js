@@ -180,16 +180,30 @@ const DashboardVM = (() => {
     // Each chip is { id, label, test(row) → bool }. Generated from profile + jobs.
 
     // Domain keyword clusters — keys match `profile.domain` or are inferred from primary_skills.
+    // Covers tech AND non-tech professions so the chips work for any candidate
+    // (engineer, accountant, designer, lawyer, doctor, marketer, etc.).
     const DOMAIN_CLUSTERS = {
+        // Tech
         'genai':     { label: 'GenAI/AI',   kw: ['genai','gen ai','llm','generative','rag','agentic','agent','prompt','transformer','gpt','claude'] },
         'ml-ai':     { label: 'ML/AI',      kw: ['ml','ai','machine learning','deep learning','tensorflow','pytorch','nlp','computer vision'] },
         'mobile':    { label: 'Mobile',     kw: ['android','ios','kotlin','swift','flutter','react native','jetpack','mobile','swiftui','compose'] },
         'backend':   { label: 'Backend',    kw: ['backend','python','golang','go ','java','node','rust','microservice','api','grpc'] },
-        'full-stack':{ label: 'Full-Stack', kw: ['full stack','full-stack','react','typescript','next.js','vue','frontend','full stack'] },
+        'full-stack':{ label: 'Full-Stack', kw: ['full stack','full-stack','react','typescript','next.js','vue','frontend'] },
         'devops':    { label: 'DevOps',     kw: ['devops','kubernetes','k8s','terraform','aws','gcp','azure','docker','ci/cd','infrastructure'] },
         'data':      { label: 'Data',       kw: ['data engineer','etl','spark','hadoop','airflow','snowflake','bigquery','warehouse','sql'] },
         'security':  { label: 'Security',   kw: ['security','infosec','pentest','vulnerability','cryptography','iam','zero trust'] },
         'product':   { label: 'Product',    kw: ['product manager','product owner','roadmap','stakeholder'] },
+        // Non-tech professions
+        'finance':   { label: 'Finance',    kw: ['finance','accounting','accountant','audit','auditor','tax','gst','cpa','chartered accountant','ca ','icai','financial','ledger','bookkeep','controller','treasury','reconcili'] },
+        'audit':     { label: 'Audit',      kw: ['audit','auditor','statutory','concurrent','internal audit','external audit','compliance','sox','tax audit'] },
+        'legal':     { label: 'Legal',      kw: ['legal','lawyer','attorney','litigation','counsel','paralegal','contracts','compliance','llp','llb','ipr'] },
+        'medical':   { label: 'Medical',    kw: ['medical','clinical','doctor','physician','nurse','nursing','pharmacy','pharmacist','radiology','surgeon','healthcare'] },
+        'design':    { label: 'Design',     kw: ['design','designer','ux','ui','visual','graphic','illustration','figma','sketch','adobe','branding','typography'] },
+        'marketing': { label: 'Marketing',  kw: ['marketing','seo','sem','content','campaign','brand','social media','growth','digital marketing','copywriter'] },
+        'sales':     { label: 'Sales',      kw: ['sales','account executive','bdr','sdr','business development','pipeline','quota','salesforce','crm'] },
+        'hr':        { label: 'HR',         kw: ['human resources','hr ','recruiter','recruiting','talent','onboarding','people ops','employee'] },
+        'operations':{ label: 'Operations', kw: ['operations','ops manager','supply chain','logistics','procurement','vendor','warehouse'] },
+        'consulting':{ label: 'Consulting', kw: ['consulting','consultant','strategy','advisory','mckinsey','bcg','bain','deloitte','pwc','ey','kpmg'] },
     };
 
     // Build active chips from profile + observed jobs.
