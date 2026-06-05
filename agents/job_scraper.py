@@ -2125,6 +2125,14 @@ class JobSearchAgent:
             InstahyreScraper(),
             CutshortScraper(),
         ]
+        self.all_jobs: list[JobListing] = []
+        self.stats = {
+            "sources_queried": 0,
+            "total_raw": 0,
+            "total_unique": 0,
+            "by_source": {},
+            "scraper_stats": {},
+        }
 
     @classmethod
     def filter_scrapers_by_profile(cls, scrapers: list, profile_domain: str) -> list:
@@ -2149,14 +2157,6 @@ class JobSearchAgent:
             if "general" in cats:
                 kept.append(s)
         return kept
-        self.all_jobs: list[JobListing] = []
-        self.stats = {
-            "sources_queried": 0,
-            "total_raw": 0,
-            "total_unique": 0,
-            "by_source": {},
-            "scraper_stats": {},
-        }
 
     def search(self, search_keywords: list, work_mode: str = "remote", applicant_location: str = "india") -> list[JobListing]:
         """
