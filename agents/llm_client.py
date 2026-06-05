@@ -118,9 +118,11 @@ def available_local_provider() -> str:
             return "lmstudio"
     except Exception:
         pass
-    # Ollama
+    # Ollama — only count it as reachable if at least one model is pulled,
+    # otherwise dispatch would just return an "unknown model" error.
     try:
-        if _req.get(f"{OLLAMA_BASE}/api/tags", timeout=2).status_code == 200:
+        r = _req.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
+        if r.status_code == 200 and r.json().get("models"):
             return "gemma"
     except Exception:
         pass

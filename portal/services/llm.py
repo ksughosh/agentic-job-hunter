@@ -118,15 +118,21 @@ def _mlx_installed() -> bool:
 
 
 def check_ollama() -> dict:
-    """Back-compat: check Ollama + Gemma."""
+    """Report Ollama server status. Any installed model counts — we never
+    require a specific one (was hardcoded to 'gemma' before)."""
     running, models = _ollama_running()
     if not running:
         return {"ok": False, "message": "Ollama not running. Start with: ollama serve"}
-    has_gemma = any("gemma" in m.lower() for m in models)
+    if not models:
+        return {
+            "ok": False,
+            "models": [],
+            "message": "Ollama running but no models pulled. Try: ollama pull llama3.1 (or any model)",
+        }
     return {
-        "ok": has_gemma,
+        "ok": True,
         "models": models,
-        "message": "Gemma ready" if has_gemma else "Gemma not found in Ollama",
+        "message": f"Ollama ready ({len(models)} model(s): {', '.join(models[:3])})",
     }
 
 
@@ -145,10 +151,11 @@ def detect_providers() -> dict:
     groq_key = _read_env_key("GROQ_API_KEY")
     groq_ok = bool(groq_key)
 
-    # Ollama: installed + running
+    # Ollama: installed + running. Any model counts as "ready" — we never
+    # require a specific name (was hardcoded to 'gemma' before).
     ollama_path = _ollama_installed_path()
     ollama_run, ollama_models = _ollama_running()
-    ollama_has_gemma = any("gemma" in m.lower() for m in ollama_models)
+    ollama_has_model = bool(ollama_models)
 
     # LM Studio: installed + server running
     lms_path = _lmstudio_installed_path()
@@ -176,10 +183,17 @@ def detect_providers() -> dict:
     if ollama_path or ollama_run:
         providers.append({
             "id": "gemma", "label": "Ollama", "icon": "🦙",
-            "available": ollama_run,
+            # "available" means we can actually dispatch to it. Server must be
+            # running AND at least one model present.
+            "available": ollama_run and ollama_has_model,
             "kind": "local",
-            "status": "ready" if (ollama_run and ollama_has_gemma) else ("running" if ollama_run else "installed"),
-            "detail": f"{len(ollama_models)} model(s)" if ollama_run else "ollama serve to start",
+            "status": "ready" if (ollama_run and ollama_has_model) else ("running" if ollama_run else "installed"),
+            "detail": (
+                f"{len(ollama_models)} model(s): {', '.join(ollama_models[:2])}"
+                if ollama_run and ollama_has_model
+                else ("Running but no models — try: ollama pull llama3.1"
+                      if ollama_run else "ollama serve to start")
+            ),
             "models": ollama_models,
         })
 
@@ -214,7 +228,25 @@ def detect_providers() -> dict:
             "status": "missing-key", "detail": "Set GROQ_API_KEY in .env",
         })
 
-    return {"active": get_provider(), "providers": providers}
+    # Auto-prefer local: if the current active provider is cloud (or unavailable)
+    # and a local provider is actually reachable, switch the server-side active
+    # to that local provider before returning. This honors the rule "default to
+    # local LM if available; only use cloud when no local exists" without
+    # requiring the user to click the toggle every session.
+    from agents.llm_client import set_provider as _set, available_local_provider
+    active = get_provider()
+    active_p = next((p for p in providers if p["id"] == active), None)
+    needs_switch = (active in ("gemini", "groq")) or (active_p and not active_p.get("available"))
+    if needs_switch:
+        local_id = available_local_provider()
+        if local_id:
+            try:
+                _set(local_id)
+                active = local_id
+            except Exception:
+                pass
+
+    return {"active": active, "providers": providers}
 
 
 def set_provider(provider: str) -> dict:
