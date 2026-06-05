@@ -114,6 +114,11 @@ const OnboardingVM = (() => {
 
             if (!data.ok) {
                 $suggestions.innerHTML = _defaultChips();
+                if ($scanStatus) {
+                    $scanStatus.style.display = 'block';
+                    $scanStatus.innerHTML = '<span style="color:var(--red); font-size:12px;">&#x26a0; '
+                        + (data.message || 'Scan failed') + '</span>';
+                }
                 return;
             }
 

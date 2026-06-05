@@ -82,17 +82,41 @@ def get_provider() -> str:
 # ─── Unified call_llm ─────────────────────────────────────────────────
 
 
-def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
-    """Route to active provider."""
-    if _active_provider == "mlx":
-        return _call_mlx(prompt, max_tokens, temperature)
-    if _active_provider == "lmstudio":
-        return _call_lmstudio(prompt, max_tokens, temperature)
-    if _active_provider == "gemma":
-        return _call_gemma(prompt, max_tokens, temperature)
-    if _active_provider == "groq":
-        return _call_groq(prompt, max_tokens, temperature)
+def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
+    if provider == "mlx":      return _call_mlx(prompt, max_tokens, temperature)
+    if provider == "lmstudio": return _call_lmstudio(prompt, max_tokens, temperature)
+    if provider == "gemma":    return _call_gemma(prompt, max_tokens, temperature)
+    if provider == "groq":     return _call_groq(prompt, max_tokens, temperature)
     return _call_gemini(prompt, max_tokens, temperature)
+
+
+def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
+    """Route to active provider, with automatic fallback to local providers
+    when the active one is a rate-limited / unavailable cloud provider.
+
+    Behavior:
+      - Try active provider first.
+      - If it returns empty AND the active is cloud (groq/gemini), try local
+        providers in this preference order: mlx → lmstudio → gemma. We don't
+        auto-fall to *another* cloud — that would silently spend money / quota
+        on a different account than the user picked.
+      - If the active is local and returns empty (model not loaded etc.), we
+        don't fall back — local failures are usually config issues the user
+        should see, not paper over.
+    """
+    primary = _dispatch(_active_provider, prompt, max_tokens, temperature)
+    if primary:
+        return primary
+
+    if _active_provider in ("groq", "gemini"):
+        for fb in ("mlx", "lmstudio", "gemma"):
+            if fb == _active_provider:
+                continue
+            result = _dispatch(fb, prompt, max_tokens, temperature)
+            if result:
+                print(f"[LLM] {_active_provider} unavailable; fell back to {fb}", flush=True)
+                return result
+    return ""
 
 
 def _call_groq(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
