@@ -681,6 +681,18 @@
     <div class="card">
         <button class="cancel-btn" id="cancelBtn" onclick="cancelPipeline()" style="display:none;" title="Cancel pipeline">&times;</button>
         <form id="searchForm" enctype="multipart/form-data">
+            <!-- LLM Provider Toggle (placed BEFORE upload so the scan-resume
+                 call hits the right provider on first try, and users can
+                 switch off rate-limited cloud LMs before they upload). -->
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding: 12px 16px; background: var(--surface2); border-radius: var(--radius); border: 1px solid var(--border); flex-wrap:wrap;">
+                <span style="font-size: 13px; color: var(--text2); flex-shrink: 0;">AI Engine:</span>
+                <div class="provider-toggle" id="providerToggle">
+                    <!-- buttons injected dynamically -->
+                </div>
+                <input type="hidden" name="llm_provider" id="providerInput" value="mlx" />
+                <span id="providerStatus" style="font-size:11px; color:var(--text2); margin-left:auto;"></span>
+            </div>
+
             <!-- Step 1: Upload resume -->
             <div class="step">
                 <div class="step-num">1</div>
@@ -756,16 +768,6 @@
                         placeholder="e.g. Anywhere, US, Europe, San Francisco"
                         value="Anywhere" autocomplete="off" />
                 </div>
-            </div>
-
-            <!-- LLM Provider Toggle (dynamic — rendered by onboarding.js from /api/providers) -->
-            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding: 12px 16px; background: var(--surface2); border-radius: var(--radius); border: 1px solid var(--border); flex-wrap:wrap;">
-                <span style="font-size: 13px; color: var(--text2); flex-shrink: 0;">AI Engine:</span>
-                <div class="provider-toggle" id="providerToggle">
-                    <!-- buttons injected dynamically -->
-                </div>
-                <input type="hidden" name="llm_provider" id="providerInput" value="mlx" />
-                <span id="providerStatus" style="font-size:11px; color:var(--text2); margin-left:auto;"></span>
             </div>
 
             <button type="submit" class="launch-btn" id="launchBtn" disabled>
