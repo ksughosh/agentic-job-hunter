@@ -79,16 +79,62 @@ info "Python $PYTHON_VERSION detected"
 pip3 install -r "$PROJECT_DIR/requirements.txt" --quiet 2>/dev/null
 ok "Dependencies installed"
 
-# JobSpy hint — adds Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter/Naukri
-# aggregation in one call. Skipped automatically on Python 3.9.
-if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>/dev/null; then
-    if python3 -c "import jobspy" 2>/dev/null; then
-        ok "JobSpy aggregator available"
+# ── JobSpy aggregator ──
+# Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter/Naukri/Bayt/BDJobs in one call.
+# Requires Python 3.10+. We try the system python3 first; if it's 3.9 we look
+# for python3.10+ on PATH and install JobSpy against that interpreter so the
+# adapter picks it up when the project runs under it.
+
+_install_jobspy_with() {
+    local PY="$1"
+    info "Installing python-jobspy against $($PY --version 2>&1)..."
+    if "$PY" -m pip install --quiet --user python-jobspy 2>/dev/null; then
+        ok "JobSpy installed"
+        return 0
+    fi
+    if "$PY" -m pip install --quiet --user --break-system-packages python-jobspy 2>/dev/null; then
+        ok "JobSpy installed (via --break-system-packages)"
+        return 0
+    fi
+    warn "Could not install python-jobspy with $PY"
+    return 1
+}
+
+_py_version_ge_310() {
+    "$1" -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>/dev/null
+}
+
+JOBSPY_PY=""
+for PY in python3 python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$PY" >/dev/null 2>&1 && _py_version_ge_310 "$PY"; then
+        JOBSPY_PY="$PY"; break
+    fi
+done
+
+if [[ -n "$JOBSPY_PY" ]]; then
+    # Ensure the same interpreter that run.sh will pick has every dep, not
+    # just JobSpy. Otherwise Flask/requests/etc. fail to import when run.sh
+    # switches from system python3 (3.9) to python3.11+ for JobSpy.
+    if ! "$JOBSPY_PY" -c "import flask" 2>/dev/null; then
+        info "Installing project requirements against $($JOBSPY_PY --version 2>&1)..."
+        if ! "$JOBSPY_PY" -m pip install --quiet --user -r "$PROJECT_DIR/requirements.txt" 2>/dev/null; then
+            "$JOBSPY_PY" -m pip install --quiet --user --break-system-packages -r "$PROJECT_DIR/requirements.txt" 2>/dev/null \
+                || warn "Could not install requirements against $JOBSPY_PY (manual: $JOBSPY_PY -m pip install -r requirements.txt)"
+        fi
+        "$JOBSPY_PY" -c "import flask" 2>/dev/null && ok "Project deps installed for $JOBSPY_PY"
     else
-        warn "JobSpy not installed. For richer Indeed/LinkedIn/Glassdoor/Google coverage: pip3 install python-jobspy"
+        ok "Project deps already present for $($JOBSPY_PY --version 2>&1)"
+    fi
+
+    if "$JOBSPY_PY" -c "import jobspy" 2>/dev/null; then
+        ok "JobSpy already installed for $($JOBSPY_PY --version 2>&1)"
+    else
+        _install_jobspy_with "$JOBSPY_PY" || warn "Manual: pip3 install python-jobspy"
     fi
 else
-    warn "Python 3.10+ recommended for JobSpy aggregator (Indeed/LinkedIn/Glassdoor/Google in one call)"
+    warn "No Python 3.10+ found; JobSpy aggregator will be skipped."
+    info "Install Python 3.10+ via: brew install python@3.12   (or pyenv/uv)"
+    info "Then re-run install.sh."
 fi
 
 # ─── Step 2: Database configuration ──────────────────────────────

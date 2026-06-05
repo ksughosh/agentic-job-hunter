@@ -56,12 +56,34 @@ if [[ "$ACTIVE_PROVIDER" == "lmstudio" || "$ACTIVE_PROVIDER" == "mlx" ]]; then
 fi
 
 # ── Pick Python ──
+# Preference: .venv > Python 3.10+ with JobSpy installed > Python 3.10+ >
+# system python3. This ensures the JobSpy aggregator is actually loaded when
+# install.sh provisioned it against python3.11/3.12, even if the default
+# python3 on PATH is older.
 PY=python3
 if [[ -d "$PROJECT_DIR/.venv" ]]; then
     # shellcheck disable=SC1091
     source "$PROJECT_DIR/.venv/bin/activate"
     PY=python
     ok "Using virtualenv .venv"
+else
+    BEST=""
+    for CAND in python3.13 python3.12 python3.11 python3.10; do
+        if command -v "$CAND" >/dev/null 2>&1; then
+            if "$CAND" -c "import jobspy" 2>/dev/null; then
+                BEST="$CAND"; break  # 3.10+ with JobSpy → ideal
+            fi
+            [[ -z "$BEST" ]] && BEST="$CAND"  # remember first 3.10+ as fallback
+        fi
+    done
+    if [[ -n "$BEST" ]]; then
+        PY="$BEST"
+        if "$BEST" -c "import jobspy" 2>/dev/null; then
+            ok "Using $BEST (JobSpy aggregator available)"
+        else
+            ok "Using $BEST"
+        fi
+    fi
 fi
 
 # ── Start Flask backend (also serves frontend) ──
