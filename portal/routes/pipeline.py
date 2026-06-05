@@ -44,11 +44,15 @@ def scan_resume():
         if deep:
             # DEEP scan (sync) — full profile incl. experience + education.
             result = fast_scan_resume(raw_text, mode="full")
+            if not result or not result.get("name"):
+                return jsonify({"ok": False, "message": "LLM returned no profile. The active provider may be rate-limited (Groq free tier) or unreachable. Try switching to MLX/LM Studio/Ollama from the AI Engine toggle."})
             data_svc.save_scan_result(result, uid)
             return jsonify({"ok": True, "mode": "deep", **result})
 
         # QUICK scan (sync) — minimal JSON, returns chips fast (~3s).
         result = fast_scan_resume(raw_text, mode="quick")
+        if not result or not result.get("name"):
+            return jsonify({"ok": False, "message": "LLM returned no profile. The active provider may be rate-limited (Groq free tier) or unreachable. Try switching to MLX/LM Studio/Ollama from the AI Engine toggle."})
 
         # Cache the quick result immediately so the pipeline can start even
         # before the full scan finishes.

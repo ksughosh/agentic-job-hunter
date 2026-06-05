@@ -61,6 +61,10 @@ _active_provider = os.environ.get("LLM_PROVIDER", "mlx")
 _mlx_model = None
 _mlx_tokenizer = None
 
+# Groq rate-limit circuit breaker — set to a unix timestamp; all _call_groq
+# requests short-circuit until time.time() >= this value.
+_GROQ_BLOCK_UNTIL = 0.0
+
 
 def set_provider(provider: str):
     """Switch between 'gemini', 'gemma', and 'mlx'."""
@@ -78,17 +82,91 @@ def get_provider() -> str:
 # ─── Unified call_llm ─────────────────────────────────────────────────
 
 
-def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
-    """Route to active provider."""
-    if _active_provider == "mlx":
-        return _call_mlx(prompt, max_tokens, temperature)
-    if _active_provider == "lmstudio":
-        return _call_lmstudio(prompt, max_tokens, temperature)
-    if _active_provider == "gemma":
-        return _call_gemma(prompt, max_tokens, temperature)
-    if _active_provider == "groq":
-        return _call_groq(prompt, max_tokens, temperature)
+_CLOUD_PROVIDERS = ("gemini", "groq")
+_LOCAL_PROVIDERS = ("mlx", "lmstudio", "gemma")
+
+
+def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
+    if provider == "mlx":      return _call_mlx(prompt, max_tokens, temperature)
+    if provider == "lmstudio": return _call_lmstudio(prompt, max_tokens, temperature)
+    if provider == "gemma":    return _call_gemma(prompt, max_tokens, temperature)
+    if provider == "groq":     return _call_groq(prompt, max_tokens, temperature)
     return _call_gemini(prompt, max_tokens, temperature)
+
+
+def is_cloud(provider: str = "") -> bool:
+    return (provider or _active_provider) in _CLOUD_PROVIDERS
+
+
+def available_local_provider() -> str:
+    """Return the first reachable local provider id, or '' if none.
+
+    Probes cheap signals: LM Studio /models endpoint, Ollama tags, mlx_lm
+    package. Used by the scan cascade to decide whether a cloud failure can
+    fall through to local.
+    """
+    import requests as _req
+    # MLX (native) — pkg installed
+    try:
+        import mlx_lm  # noqa: F401
+        return "mlx"
+    except Exception:
+        pass
+    # LM Studio server
+    try:
+        if _req.get(f"{LMSTUDIO_BASE_URL}/models", timeout=2).status_code == 200:
+            return "lmstudio"
+    except Exception:
+        pass
+    # Ollama — only count it as reachable if at least one model is pulled,
+    # otherwise dispatch would just return an "unknown model" error.
+    try:
+        r = _req.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
+        if r.status_code == 200 and r.json().get("models"):
+            return "gemma"
+    except Exception:
+        pass
+    return ""
+
+
+def call_provider(provider: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
+    """Direct call to a named provider, bypassing the active-provider router.
+    Lets call sites that need an explicit cascade (e.g. the scan agent) pick
+    the order themselves instead of relying on call_llm's automatic fallback.
+    """
+    return _dispatch(provider, prompt, max_tokens, temperature)
+
+
+def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
+    """Unified entry point used by every LLM call site (jd_match, resume_writer,
+    cover_letter, talent_review, etc.). Follows the same cascade as the resume
+    scanner so the rule is identical wherever an LM is invoked:
+
+      1. Try the active provider (cloud OR local — whichever the user picked).
+      2. If empty AND the active is cloud, probe for a reachable local
+         provider (mlx → lmstudio → gemma). Retry against that local provider.
+      3. Return "" if everything failed.
+
+    We deliberately do NOT cascade cloud→cloud (avoid silently spending quota
+    on a different account) and do NOT cascade local→cloud (a local failure
+    is usually a config issue the user should see, not paper over with a
+    cloud spend).
+    """
+    primary = _dispatch(_active_provider, prompt, max_tokens, temperature)
+    if primary:
+        return primary
+
+    if _active_provider in _CLOUD_PROVIDERS:
+        local = available_local_provider()
+        if local and local != _active_provider:
+            result = _dispatch(local, prompt, max_tokens, temperature)
+            if result:
+                print(f"[LLM] {_active_provider} unavailable; fell back to local {local}", flush=True)
+                return result
+            print(f"[LLM] {_active_provider} unavailable; local {local} also failed", flush=True)
+        else:
+            print(f"[LLM] {_active_provider} unavailable; no local LM reachable", flush=True)
+    return ""
 
 
 def _call_groq(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
@@ -96,23 +174,45 @@ def _call_groq(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) ->
     if not GROQ_API_KEY:
         print("[Groq] GROQ_API_KEY not set", flush=True)
         return ""
-    try:
-        resp = requests.post(
-            f"{GROQ_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": GROQ_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"[Groq] Error: {e}", flush=True)
+
+    # Free-tier circuit breaker — once we hit 429, hold off subsequent calls
+    # until the server-supplied Retry-After window elapses. Prevents the
+    # pipeline from spamming hundreds of 429s while parallel workers race.
+    global _GROQ_BLOCK_UNTIL
+    now = time.time()
+    if now < _GROQ_BLOCK_UNTIL:
         return ""
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"{GROQ_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                },
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                # Honor Retry-After if present, else exponential backoff.
+                ra = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+                wait = float(ra) if ra and ra.replace(".", "", 1).isdigit() else (10 * (attempt + 1))
+                wait = min(wait, 60.0)
+                _GROQ_BLOCK_UNTIL = time.time() + wait
+                print(f"[Groq] 429 rate-limited; blocking all calls for {wait:.0f}s", flush=True)
+                return ""
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except requests.exceptions.RequestException as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            print(f"[Groq] Error after {attempt+1} retries: {e}", flush=True)
+            return ""
+    return ""
 
 
 def _call_lmstudio(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:

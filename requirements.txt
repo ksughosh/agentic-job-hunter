@@ -9,3 +9,7 @@ PyPDF2>=3.0.0
 psycopg2-binary>=2.9.0
 supabase>=2.0.0
 # Optional: Ollama (for local Gemma4) - install separately via https://ollama.ai
+# Optional: JobSpy aggregator (Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter/Naukri).
+# Requires Python 3.10+; the agents/job_scraper.py adapter gracefully skips it
+# when unavailable, so 3.9 envs continue to work.
+python-jobspy>=1.1.0; python_version >= "3.10"

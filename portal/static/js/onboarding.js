@@ -114,6 +114,11 @@ const OnboardingVM = (() => {
 
             if (!data.ok) {
                 $suggestions.innerHTML = _defaultChips();
+                if ($scanStatus) {
+                    $scanStatus.style.display = 'block';
+                    $scanStatus.innerHTML = '<span style="color:var(--red); font-size:12px;">&#x26a0; '
+                        + (data.message || 'Scan failed') + '</span>';
+                }
                 return;
             }
 
@@ -152,11 +157,13 @@ const OnboardingVM = (() => {
     }
 
     function _defaultChips() {
-        return [
-            'Staff Android Engineer', 'Senior AI/ML Engineer', 'Mobile Engineer',
-            'Full Stack Developer', 'DevOps Engineer', 'Data Scientist',
-            'Product Manager', 'Principal Engineer'
-        ].map(function(r) { return '<span class="suggestion-chip" onclick="addRole(this)">' + r + '</span>'; }).join('');
+        // No-op fallback. We deliberately do NOT seed engineering roles here:
+        // showing "Staff Android Engineer" to a Chartered Accountant biased the
+        // entire pipeline because users would tap a chip rather than type.
+        // When the scan can't extract roles, ask the user to type their own.
+        return '<span style="color:var(--text2); font-size:12px; padding:6px;">'
+            + 'No role suggestions could be derived from this resume. '
+            + 'Type the roles you want to target above.</span>';
     }
 
     // ── Role Input ──

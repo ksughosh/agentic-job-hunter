@@ -189,9 +189,18 @@ EXPERIENCE_YEAR_PATTERNS = [
 class JDReviewerAgent:
     """Reviews job descriptions against candidate profile, with LLM-powered headhunter matching."""
 
-    def __init__(self, use_llm: bool = True, search_context=None):
+    def __init__(self, use_llm: bool = True, search_context=None, profile=None):
+        """Init reviewer.
+
+        profile: candidate profile dict from data_svc.load_profile() — used to
+        build the TF-IDF corpus and skill buckets dynamically. If omitted the
+        agent falls back to the legacy module-level RESUME_TEXT/RESUME_SKILLS
+        constants (kept only for backward compatibility; should NOT be relied
+        on in normal operation).
+        """
         self._use_llm = use_llm
         self._ctx = search_context or {}
+        self._profile = profile or {}
         # Parse work modes from comma-sep string or list.
         wm = self._ctx.get("work_mode", "remote")
         self._work_modes = set(
@@ -207,13 +216,58 @@ class JDReviewerAgent:
         self._fit_vectorizer()
         self._llm_call_count = 0
 
+    def _build_dynamic_corpus(self) -> tuple:
+        """Build (resume_text, skill_buckets) from the candidate profile.
+
+        Domain-agnostic: works equally for a Chartered Accountant, a doctor, a
+        Staff Mobile Engineer, etc. We never inject hardcoded engineering
+        skills here — the buckets are derived from whatever primary_skills /
+        domain_keywords / experience_entries the resume actually contains.
+        """
+        p = self._profile or {}
+        parts = []
+        if p.get("summary"): parts.append(p["summary"])
+        if p.get("title"): parts.append(p["title"])
+        if p.get("name"): parts.append(p["name"])
+        prims = [str(s) for s in (p.get("primary_skills") or []) if s]
+        doms  = [str(s) for s in (p.get("domain_keywords") or []) if s]
+        if prims: parts.append("Skills: " + ", ".join(prims))
+        if doms:  parts.append("Domain: " + ", ".join(doms))
+        for entry in (p.get("experience_entries") or []):
+            if isinstance(entry, dict):
+                bits = [entry.get("title", ""), entry.get("company", "")]
+                bits += entry.get("bullets", []) or []
+                parts.append(" ".join(str(b) for b in bits if b))
+        for edu in (p.get("education") or []):
+            if isinstance(edu, dict):
+                parts.append(" ".join(str(edu.get(k, "")) for k in ("degree", "university", "field")))
+        resume_text = "\n".join(p_ for p_ in parts if p_).strip()
+
+        # Build skill buckets from the resume itself.
+        buckets = {}
+        if prims:
+            buckets["primary"] = [s.lower() for s in prims]
+        if doms:
+            buckets["domain"] = [s.lower() for s in doms]
+        return resume_text, buckets
+
     def _fit_vectorizer(self):
+        dyn_text, dyn_buckets = self._build_dynamic_corpus()
+        # Fall back to legacy constants only if profile produced nothing usable.
+        if dyn_text:
+            self._resume_text = dyn_text
+            self._skill_buckets = dyn_buckets or {"primary": []}
+            self._using_dynamic = True
+        else:
+            self._resume_text = RESUME_TEXT
+            self._skill_buckets = RESUME_SKILLS
+            self._using_dynamic = False
         all_skills = []
-        for category in RESUME_SKILLS.values():
-            all_skills.extend(category)
-        corpus = [RESUME_TEXT, " ".join(all_skills)]
+        for bucket in self._skill_buckets.values():
+            all_skills.extend(bucket)
+        corpus = [self._resume_text, " ".join(all_skills)] if all_skills else [self._resume_text]
         self.vectorizer.fit(corpus)
-        self.resume_vector = self.vectorizer.transform([RESUME_TEXT])
+        self.resume_vector = self.vectorizer.transform([self._resume_text])
 
     def review_job(self, job, company_review=None) -> JDReviewResult:
         def _str(val):
@@ -354,29 +408,35 @@ class JDReviewerAgent:
         except Exception:
             tfidf_sim = 0
 
-        skill_matches = []
-        skill_gaps = []
-        category_scores = {}
-        for category, skills in RESUME_SKILLS.items():
-            matched = [s for s in skills if s.lower() in combined]
-            weight = SKILL_WEIGHTS.get(category, 0.1)
+        # Score against the dynamic buckets built from THIS user's profile.
+        # When dynamic buckets are empty we fall through to TF-IDF only — never
+        # to the legacy engineering keyword list.
+        buckets = self._skill_buckets or {}
+        # Equal weight across whatever buckets the profile yielded.
+        bucket_weight = 1.0 / max(len(buckets), 1)
+        skill_matches, skill_gaps, category_scores = [], [], {}
+        for category, skills in buckets.items():
+            if not skills:
+                continue
+            matched = [s for s in skills if s and s.lower() in combined]
             if matched:
                 score = len(matched) / max(len(skills), 1) * 100
                 category_scores[category] = score
                 skill_matches.extend(matched)
             else:
-                missing_in_jd = [s for s in skills[:3] if s.lower() in combined]
-                if not missing_in_jd:
-                    skill_gaps.append(category)
+                skill_gaps.append(category)
 
         keyword_score = 0
         if category_scores:
-            keyword_score = sum(
-                score * SKILL_WEIGHTS.get(cat, 0.1)
-                for cat, score in category_scores.items()
-            ) / sum(SKILL_WEIGHTS.get(cat, 0.1) for cat in category_scores)
+            keyword_score = sum(category_scores.values()) / len(category_scores)
 
-        final_score = tfidf_sim * 0.4 + keyword_score * 0.6
+        # Blend: TF-IDF dominates when no skill buckets matched, otherwise
+        # keyword score gets equal say. Prevents zero-skill profiles from
+        # collapsing to 0 across the board.
+        if category_scores:
+            final_score = tfidf_sim * 0.4 + keyword_score * 0.6
+        else:
+            final_score = tfidf_sim
         return min(100, final_score), list(set(skill_matches)), skill_gaps
 
     def _assess_listing_quality(self, job, company_review) -> float:
@@ -527,42 +587,53 @@ class JDReviewerAgent:
         return 15  # mismatch
 
     def _genai_mobile_bonus(self, title: str, desc: str, tags: list) -> float:
+        """Domain-match bonus — generic. Awards points proportional to how
+        many of the candidate's domain_keywords / primary_skills appear in
+        the JD. No hardcoded engineering or AI bias.
+
+        Method name kept for backward compat with the composite formula.
+        """
         combined = f"{title} {desc} {' '.join(tags)}".lower()
-        bonus = 0
-        mobile_keywords = ["android", "mobile", "kotlin", "flutter", "ios", "react native", "jetpack"]
-        ai_keywords = ["ai", "llm", "genai", "generative", "machine learning", "ml", "agent", "autonomous"]
-        has_mobile = any(k in combined for k in mobile_keywords)
-        has_ai = any(k in combined for k in ai_keywords)
-        if has_mobile and has_ai:
-            bonus = 20
-        elif has_ai:
-            bonus = 15
-        elif has_mobile:
-            bonus = 12
-        return bonus
+        keywords = []
+        keywords.extend(self._skill_buckets.get("domain", []) or [])
+        keywords.extend(self._skill_buckets.get("primary", []) or [])
+        # De-dup + drop empties.
+        keywords = [k for k in dict.fromkeys(keywords) if k]
+        if not keywords:
+            return 0.0
+        hits = sum(1 for k in keywords if k in combined)
+        if hits == 0:
+            return 0.0
+        # Cap at 20 like the legacy max; scale linearly to the % of profile
+        # keywords present in the JD.
+        return min(20.0, (hits / max(len(keywords), 1)) * 40.0)
 
     def _identify_strengths(self, title: str, desc: str, skill_matches: list, seniority: str) -> list:
+        """Strengths now derive from skill_matches (which come from the user's
+        own profile) instead of a hardcoded engineering checklist. No more
+        'Strong Android/Mobile alignment' for a Chartered Accountant."""
         strengths = []
-        combined = f"{title} {desc}".lower()
-        if seniority in ["Staff/Architect", "Principal/Distinguished"]:
+        if seniority in ["Staff/Architect", "Principal/Distinguished", "Senior Lead"]:
             strengths.append(f"Seniority match: {seniority}")
-        if any(s in skill_matches for s in ["android", "kotlin", "jetpack compose", "mobile architecture"]):
-            strengths.append("Strong Android/Mobile alignment")
-        if any(s in skill_matches for s in ["generative ai", "genai", "llm", "agentic ai", "ai agents"]):
-            strengths.append("GenAI/LLM expertise match")
-        if any(s in skill_matches for s in ["staff engineer", "senior staff", "tech lead", "principal engineer", "architect", "architecture"]):
-            strengths.append("Leadership level match")
-        if any(s in skill_matches for s in ["ci/cd", "performance engineering", "build systems"]):
-            strengths.append("Infrastructure & DevOps match")
-        if any(s in skill_matches for s in ["flutter", "cross-platform", "multi-platform"]):
-            strengths.append("Cross-platform experience")
-        if any(s in skill_matches for s in ["figma", "design system"]):
-            strengths.append("Design tooling expertise")
-        if any(s in skill_matches for s in ["sdk development"]):
-            strengths.append("SDK development experience")
-        if "python" in skill_matches:
-            strengths.append("Python proficiency")
-        return strengths if strengths else ["General software engineering match"]
+
+        # Take the top 4 matched skills as named strengths. They're the user's
+        # actual primary/domain keywords, so the message is always specific.
+        primary = self._skill_buckets.get("primary", []) or []
+        domain  = self._skill_buckets.get("domain", []) or []
+        named = []
+        # Prefer primary skills, then domain keywords, in original profile order.
+        for s in primary + domain:
+            sl = s.lower()
+            if sl in skill_matches and sl not in [n.lower() for n in named]:
+                named.append(s)
+            if len(named) >= 4:
+                break
+        if named:
+            strengths.append("Skill match: " + ", ".join(named))
+
+        if not strengths:
+            strengths.append("General profile alignment")
+        return strengths
 
     def batch_review(self, jobs: list, company_reviews: dict, progress_callback=None) -> list[JDReviewResult]:
         import time

@@ -681,6 +681,18 @@
     <div class="card">
         <button class="cancel-btn" id="cancelBtn" onclick="cancelPipeline()" style="display:none;" title="Cancel pipeline">&times;</button>
         <form id="searchForm" enctype="multipart/form-data">
+            <!-- LLM Provider Toggle (placed BEFORE upload so the scan-resume
+                 call hits the right provider on first try, and users can
+                 switch off rate-limited cloud LMs before they upload). -->
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding: 12px 16px; background: var(--surface2); border-radius: var(--radius); border: 1px solid var(--border); flex-wrap:wrap;">
+                <span style="font-size: 13px; color: var(--text2); flex-shrink: 0;">AI Engine:</span>
+                <div class="provider-toggle" id="providerToggle">
+                    <!-- buttons injected dynamically -->
+                </div>
+                <input type="hidden" name="llm_provider" id="providerInput" value="mlx" />
+                <span id="providerStatus" style="font-size:11px; color:var(--text2); margin-left:auto;"></span>
+            </div>
+
             <!-- Step 1: Upload resume -->
             <div class="step">
                 <div class="step-num">1</div>
@@ -708,17 +720,16 @@
                     <div class="hint">Comma-separated. Be specific — include seniority, domain, specialization.</div>
                     <div id="scanStatus" style="display:none; margin-bottom:8px; padding:6px 10px; background:rgba(0,206,201,0.08); border-radius:8px; border:1px solid rgba(0,206,201,0.2);"></div>
                     <input type="text" class="search-input" id="roleInput" name="desired_roles"
-                        placeholder="e.g. Staff Android Engineer, Senior AI/ML Engineer, Principal Mobile Architect"
+                        placeholder="e.g. Senior Audit Manager, Staff Mobile Engineer, Marketing Director"
                         autocomplete="off" />
+                    <!-- Suggestion chips are populated dynamically by onboarding.js
+                         from the resume scan output. We intentionally do NOT seed
+                         them with engineering roles — that biased the search for
+                         non-engineering candidates. -->
                     <div class="suggestions">
-                        <span class="suggestion-chip" onclick="addRole(this)">Staff Android Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Senior AI/ML Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Mobile Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Full Stack Developer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">DevOps Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Data Scientist</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Product Manager</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Principal Engineer</span>
+                        <span style="color:var(--text2); font-size:12px; padding:6px;">
+                            Upload a resume to get role suggestions tailored to your background.
+                        </span>
                     </div>
                 </div>
             </div>
@@ -757,16 +768,6 @@
                         placeholder="e.g. Anywhere, US, Europe, San Francisco"
                         value="Anywhere" autocomplete="off" />
                 </div>
-            </div>
-
-            <!-- LLM Provider Toggle (dynamic — rendered by onboarding.js from /api/providers) -->
-            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding: 12px 16px; background: var(--surface2); border-radius: var(--radius); border: 1px solid var(--border); flex-wrap:wrap;">
-                <span style="font-size: 13px; color: var(--text2); flex-shrink: 0;">AI Engine:</span>
-                <div class="provider-toggle" id="providerToggle">
-                    <!-- buttons injected dynamically -->
-                </div>
-                <input type="hidden" name="llm_provider" id="providerInput" value="mlx" />
-                <span id="providerStatus" style="font-size:11px; color:var(--text2); margin-left:auto;"></span>
             </div>
 
             <button type="submit" class="launch-btn" id="launchBtn" disabled>
