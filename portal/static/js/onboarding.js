@@ -114,6 +114,11 @@ const OnboardingVM = (() => {
 
             if (!data.ok) {
                 $suggestions.innerHTML = _defaultChips();
+                if ($scanStatus) {
+                    $scanStatus.style.display = 'block';
+                    $scanStatus.innerHTML = '<span style="color:var(--red); font-size:12px;">&#x26a0; Resume scan failed: '
+                        + (data.message || 'unknown error') + ' — showing default chips.</span>';
+                }
                 return;
             }
 
@@ -148,6 +153,11 @@ const OnboardingVM = (() => {
         } catch (err) {
             console.error('Resume scan failed:', err);
             $suggestions.innerHTML = _defaultChips();
+            if ($scanStatus) {
+                $scanStatus.style.display = 'block';
+                $scanStatus.innerHTML = '<span style="color:var(--red); font-size:12px;">&#x26a0; Resume scan request failed: '
+                    + (err && err.message ? err.message : 'network error') + '</span>';
+            }
         }
     }
 
@@ -253,46 +263,75 @@ const OnboardingVM = (() => {
 
     function _bindProviderToggle() { /* dynamic — buttons created by _renderProviders */ }
 
+    // Static fallback used when /api/providers can't be reached (e.g. server
+    // running stale code without the route, or network blip). Keeps the toggle
+    // usable instead of leaving the user with an empty "AI Engine:" label.
+    const _FALLBACK_PROVIDERS = [
+        { id: 'mlx',      label: 'MLX',       icon: '🍎', kind: 'local', available: true,  detail: 'Apple Silicon native' },
+        { id: 'lmstudio', label: 'LM Studio', icon: '🖥️', kind: 'local', available: true,  detail: 'LM Studio OpenAI-compatible server' },
+        { id: 'gemma',    label: 'Ollama',    icon: '🦙', kind: 'local', available: true,  detail: 'Ollama (local)' },
+        { id: 'gemini',   label: 'Gemini',    icon: '☁️', kind: 'cloud', available: true,  detail: 'Google Gemini' },
+        { id: 'groq',     label: 'Groq',      icon: '⚡', kind: 'cloud', available: true,  detail: 'Groq cloud' },
+    ];
+
+    function _paintProviders(wrap, hidden, status, list, active) {
+        wrap.innerHTML = '';
+        list.forEach(p => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'provider-btn' + (p.id === active ? ' active' : '');
+            btn.dataset.provider = p.id;
+            btn.title = p.detail || '';
+            btn.style.opacity = p.available ? '1' : '0.45';
+            btn.disabled = !p.available;
+            btn.innerHTML = `${p.icon} ${p.label} <span style="font-size:10px; opacity:0.6;">(${p.kind})</span>`;
+            btn.onclick = () => setProvider(btn);
+            wrap.appendChild(btn);
+        });
+        if (hidden) hidden.value = active || '';
+        if (status) {
+            const ap = list.find(p => p.id === active);
+            status.textContent = ap ? (ap.detail || '') : '';
+            status.style.color = 'var(--green)';
+        }
+    }
+
     async function _renderProviders() {
         const wrap = document.getElementById('providerToggle');
         const hidden = document.getElementById('providerInput');
         const status = document.getElementById('providerStatus');
         if (!wrap) return;
+
+        // Paint fallback immediately so the toggle is never empty, even if the
+        // network call below stalls or 404s on a stale server.
+        _paintProviders(wrap, hidden, status,
+            _FALLBACK_PROVIDERS,
+            (hidden && hidden.value) || 'mlx');
+
         try {
             const d = await Api.getProviders();
-            wrap.innerHTML = '';
-            const list = d.providers || [];
-            // Pick active: server says, else first available
+            const list = (d && d.providers) || [];
+            if (!list.length) {
+                if (status) {
+                    status.textContent = 'No providers detected — using defaults';
+                    status.style.color = 'var(--text2)';
+                }
+                return;
+            }
             let active = d.active;
             if (!list.some(p => p.id === active && p.available)) {
                 const firstOk = list.find(p => p.available);
                 if (firstOk) active = firstOk.id;
             }
-            list.forEach(p => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'provider-btn' + (p.id === active ? ' active' : '');
-                btn.dataset.provider = p.id;
-                btn.title = p.detail || '';
-                btn.style.opacity = p.available ? '1' : '0.45';
-                btn.disabled = !p.available;
-                btn.innerHTML = `${p.icon} ${p.label} <span style="font-size:10px; opacity:0.6;">(${p.kind})</span>`;
-                btn.onclick = () => setProvider(btn);
-                wrap.appendChild(btn);
-            });
-            hidden.value = active;
-            if (active) {
-                try { await Api.setProvider(active); } catch {}
-                const ap = list.find(p => p.id === active);
-                if (ap && status) {
-                    status.textContent = ap.detail || '';
-                    status.style.color = 'var(--green)';
-                }
-            } else if (status) {
-                status.textContent = 'No provider configured — run install.sh';
+            _paintProviders(wrap, hidden, status, list, active);
+            if (active) { try { await Api.setProvider(active); } catch { /* noop */ } }
+        } catch (e) {
+            console.error('providers fetch failed', e);
+            if (status) {
+                status.textContent = 'Detection failed — using defaults';
                 status.style.color = 'var(--red)';
             }
-        } catch (e) { console.error('providers fetch failed', e); }
+        }
     }
 
     async function setProvider(btn) {
