@@ -27,6 +27,7 @@ const DashboardVM = (() => {
         _bindSearch();
         _resumePipelineIfRunning();
         _renderProviders();
+        _renderChips();
     }
 
     async function _renderProviders() {
@@ -175,19 +176,109 @@ const DashboardVM = (() => {
         document.getElementById('expand-' + idx).classList.toggle('visible');
     }
 
-    function filterJobs(type, btn) {
-        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+    // ── Dynamic filter chips ─────────────────────────────────
+    // Each chip is { id, label, test(row) → bool }. Generated from profile + jobs.
+
+    // Domain keyword clusters — keys match `profile.domain` or are inferred from primary_skills.
+    const DOMAIN_CLUSTERS = {
+        'genai':     { label: 'GenAI/AI',   kw: ['genai','gen ai','llm','generative','rag','agentic','agent','prompt','transformer','gpt','claude'] },
+        'ml-ai':     { label: 'ML/AI',      kw: ['ml','ai','machine learning','deep learning','tensorflow','pytorch','nlp','computer vision'] },
+        'mobile':    { label: 'Mobile',     kw: ['android','ios','kotlin','swift','flutter','react native','jetpack','mobile','swiftui','compose'] },
+        'backend':   { label: 'Backend',    kw: ['backend','python','golang','go ','java','node','rust','microservice','api','grpc'] },
+        'full-stack':{ label: 'Full-Stack', kw: ['full stack','full-stack','react','typescript','next.js','vue','frontend','full stack'] },
+        'devops':    { label: 'DevOps',     kw: ['devops','kubernetes','k8s','terraform','aws','gcp','azure','docker','ci/cd','infrastructure'] },
+        'data':      { label: 'Data',       kw: ['data engineer','etl','spark','hadoop','airflow','snowflake','bigquery','warehouse','sql'] },
+        'security':  { label: 'Security',   kw: ['security','infosec','pentest','vulnerability','cryptography','iam','zero trust'] },
+        'product':   { label: 'Product',    kw: ['product manager','product owner','roadmap','stakeholder'] },
+    };
+
+    // Build active chips from profile + observed jobs.
+    function _buildChips() {
+        const profile = (window.__dashboardData || {}).profile || {};
+        const skills = (profile.primary_skills || []).map(s => String(s).toLowerCase());
+        const domain = String(profile.domain || '').toLowerCase().replace(/\s+/g, '-');
+        const level  = String(profile.experience_level || '').toLowerCase();
+        const allJobs = jobsData || (window.__dashboardData || {}).jobs || [];
+
+        const chips = [
+            { id: 'all', label: 'All', test: () => true }
+        ];
+
+        // Domain chips: include cluster if profile.domain matches OR primary_skills contains any cluster keyword.
+        const seen = new Set();
+        for (const [key, cluster] of Object.entries(DOMAIN_CLUSTERS)) {
+            if (seen.has(key)) continue;
+            const domainMatch = domain && (domain === key || domain.includes(key));
+            const skillMatch = skills.some(s => cluster.kw.some(k => s.includes(k)));
+            if (!domainMatch && !skillMatch) continue;
+            seen.add(key);
+            chips.push({
+                id: 'domain-' + key,
+                label: cluster.label,
+                test: row => {
+                    const haystack = (row.dataset.skills || '') + ' ' + (row.cells?.[1]?.textContent || '').toLowerCase();
+                    return cluster.kw.some(k => haystack.includes(k));
+                },
+            });
+        }
+
+        // Seniority chip — show only if profile is senior+ (otherwise meaningless).
+        if (level === 'staff' || level === 'principal') {
+            chips.push({
+                id: 'staff', label: 'Staff+',
+                test: row => /(staff|principal|distinguished)/i.test(row.dataset.seniority || ''),
+            });
+        } else if (level === 'senior') {
+            chips.push({
+                id: 'senior', label: 'Senior+',
+                test: row => /(senior|staff|principal|lead)/i.test(row.dataset.seniority || ''),
+            });
+        }
+
+        // Contract chip — only if any contract jobs exist.
+        if (allJobs.some(j => /(contract|freelance)/i.test(String(j.job_type || '')))) {
+            chips.push({
+                id: 'contract', label: 'Contract',
+                test: row => /(contract|freelance)/i.test(row.dataset.type || ''),
+            });
+        }
+
+        // High-match chip — only if any job ≥60.
+        if (allJobs.some(j => Number(j.match_score || 0) >= 60)) {
+            chips.push({
+                id: 'high-match', label: 'High Match (60%+)',
+                test: row => parseFloat(row.dataset.match || 0) >= 60,
+            });
+        }
+
+        return chips;
+    }
+
+    let _activeChips = [];
+    let _activeChipId = 'all';
+
+    function _renderChips() {
+        const container = document.getElementById('filterChips');
+        if (!container) return;
+        _activeChips = _buildChips();
+        container.innerHTML = '';
+        _activeChips.forEach(chip => {
+            const btn = document.createElement('button');
+            btn.className = 'filter-btn' + (chip.id === _activeChipId ? ' active' : '');
+            btn.textContent = chip.label;
+            btn.onclick = () => filterJobs(chip.id, btn);
+            container.appendChild(btn);
+        });
+    }
+
+    function filterJobs(id, btn) {
+        _activeChipId = id;
+        document.querySelectorAll('#filterChips .filter-btn').forEach(b => b.classList.remove('active'));
+        if (btn) btn.classList.add('active');
+        const chip = _activeChips.find(c => c.id === id) || _activeChips[0];
         document.querySelectorAll('.job-row').forEach((row, i) => {
             const expandRow = document.getElementById('expand-' + (i + 1));
-            const jt = row.dataset.type || '', match = parseFloat(row.dataset.match || 0);
-            const skills = row.dataset.skills || '', seniority = row.dataset.seniority || '';
-            let show = true;
-            if (type === 'contract')   show = jt.includes('contract') || jt.includes('freelance');
-            else if (type === 'genai') show = skills.includes('genai') || skills.includes('llm') || skills.includes('ai') || skills.includes('machine learning');
-            else if (type === 'mobile') show = skills.includes('android') || skills.includes('mobile') || skills.includes('kotlin') || skills.includes('flutter');
-            else if (type === 'staff') show = seniority.includes('Staff') || seniority.includes('Principal');
-            else if (type === 'high-match') show = match >= 60;
+            const show = !!chip && chip.test(row);
             row.style.display = show ? '' : 'none';
             if (expandRow) { expandRow.style.display = show ? '' : 'none'; if (!show) expandRow.classList.remove('visible'); }
         });
@@ -351,6 +442,8 @@ const DashboardVM = (() => {
         init, switchProvider, triggerRefresh, cancelRefresh,
         toggleExpand, filterJobs, sortTable,
         generateResume, generateCover, switchTab, closeModal, printDoc, copyDoc,
+        // exposed for tests
+        _buildChips, DOMAIN_CLUSTERS,
     };
 })();
 

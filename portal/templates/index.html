@@ -690,12 +690,9 @@
 
         <div class="filters">
             <input type="text" class="search-box" id="searchInput" placeholder="Search jobs, companies, skills...">
-            <button class="filter-btn active" onclick="filterJobs('all', this)">All</button>
-            <button class="filter-btn" onclick="filterJobs('contract', this)">Contract</button>
-            <button class="filter-btn" onclick="filterJobs('genai', this)">GenAI/AI</button>
-            <button class="filter-btn" onclick="filterJobs('mobile', this)">Mobile</button>
-            <button class="filter-btn" onclick="filterJobs('staff', this)">Staff+</button>
-            <button class="filter-btn" onclick="filterJobs('high-match', this)">High Match (60%+)</button>
+            <div id="filterChips" style="display:flex; gap:8px; flex-wrap:wrap;">
+                <!-- chips rendered dynamically from profile + job data by DashboardVM -->
+            </div>
         </div>
 
         <table class="jobs-table" id="jobsTable">
