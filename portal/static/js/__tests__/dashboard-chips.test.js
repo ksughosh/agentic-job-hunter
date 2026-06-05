@@ -112,6 +112,46 @@ describe('DashboardVM._buildChips — dynamic chip generation', () => {
         expect(labels).toContain('Mobile');
     });
 
+    // ── Non-tech professions (regression: previously the dashboard only
+    //    knew tech clusters, so a Chartered Accountant saw 'All' + nothing).
+
+    it('adds Finance / Audit chips for a Chartered Accountant resume', () => {
+        setup({
+            profile: {
+                domain: 'finance',
+                primary_skills: [
+                    'Statutory Audit', 'Tax Audit', 'GST', 'ROC Filings',
+                    'Concurrent Audit', 'Tally ERP', 'Finacle'
+                ]
+            }
+        });
+        const labels = DashboardVM._buildChips().map(c => c.label);
+        expect(labels).toContain('Finance');
+        expect(labels).toContain('Audit');
+        // And critically, NO engineering chip:
+        expect(labels).not.toContain('Mobile');
+        expect(labels).not.toContain('Backend');
+        expect(labels).not.toContain('GenAI/AI');
+    });
+
+    it('adds Legal chip for a lawyer profile', () => {
+        setup({ profile: { primary_skills: ['Litigation', 'Contracts', 'IPR'] } });
+        const labels = DashboardVM._buildChips().map(c => c.label);
+        expect(labels).toContain('Legal');
+    });
+
+    it('adds Marketing chip for a digital marketer', () => {
+        setup({ profile: { primary_skills: ['SEO', 'Content', 'Brand', 'Social Media'] } });
+        const labels = DashboardVM._buildChips().map(c => c.label);
+        expect(labels).toContain('Marketing');
+    });
+
+    it('adds Design chip for a UX designer', () => {
+        setup({ profile: { primary_skills: ['Figma', 'UX', 'Visual Design'] } });
+        const labels = DashboardVM._buildChips().map(c => c.label);
+        expect(labels).toContain('Design');
+    });
+
     it('returns only "All" for an empty profile with no jobs', () => {
         setup({ profile: {}, jobs: [] });
         const chips = DashboardVM._buildChips();

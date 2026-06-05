@@ -2053,6 +2053,43 @@ class TruelancerScraper(AutoHealingScraper):
 class JobSearchAgent:
     """Orchestrates multiple scrapers, deduplicates, and merges results."""
 
+    # Per-scraper category tags. "general" = works for any profession;
+    # "tech" = the source itself or its hardcoded URLs only carry software
+    # roles. Pipeline uses these to skip tech-only sources for non-tech
+    # candidates (a Chartered Accountant should not be searched on Arc.dev
+    # or GunIO — those return only engineering jobs).
+    SCRAPER_CATEGORIES = {
+        # Major general-purpose platforms
+        "LinkedIn": {"general"},
+        "Indeed": {"general"},
+        "Naukri": {"general"},
+        "Monster": {"general"},
+        "Glassdoor": {"general"},
+        "FlexJobs": {"general"},
+        "Instahyre": {"general"},
+        "Cutshort": {"general"},
+        # General remote boards
+        "Remotive": {"general", "tech"},
+        "Arbeitnow": {"general"},
+        "Working Nomads": {"general"},
+        "RemoteCo": {"general"},
+        "Jobgether": {"general"},
+        "Himalayas": {"general"},
+        "JobIcy": {"general"},
+        "Just Remote": {"general"},
+        "Wellfound": {"general", "tech"},
+        # Tech-specific (skip for non-tech profiles)
+        "RemoteOK": {"tech"},
+        "We Work Remotely": {"tech"},
+        "Remote Rocketship": {"tech"},
+        "Arc.dev": {"tech"},
+        "Toptal": {"tech"},
+        "Contra": {"tech", "design"},
+        "GunIO": {"tech"},
+        "Turing": {"tech"},
+        "Truelancer": {"general", "tech"},
+    }
+
     def __init__(self):
         self.scrapers = [
             # ── Major Platforms (highest conversion) ──
@@ -2096,6 +2133,30 @@ class JobSearchAgent:
             "by_source": {},
             "scraper_stats": {},
         }
+
+    @classmethod
+    def filter_scrapers_by_profile(cls, scrapers: list, profile_domain: str) -> list:
+        """Skip tech-only scrapers when the profile is non-tech.
+
+        Returns the same scraper list when profile_domain is empty or matches a
+        tech category (no harm in querying everything). For non-tech profiles
+        (finance, legal, medical, marketing, etc.) we drop scrapers whose
+        category set does not include "general"."""
+        if not profile_domain:
+            return scrapers
+        d = profile_domain.lower()
+        tech_terms = {"software", "engineering", "mobile", "backend", "frontend",
+                      "full-stack", "fullstack", "devops", "data", "ml", "ai",
+                      "ml-ai", "tech", "developer"}
+        if any(t in d for t in tech_terms):
+            return scrapers
+        # Non-tech profile — keep only scrapers tagged "general".
+        kept = []
+        for s in scrapers:
+            cats = cls.SCRAPER_CATEGORIES.get(s.name, {"general"})
+            if "general" in cats:
+                kept.append(s)
+        return kept
 
     def search(self, search_keywords: list, work_mode: str = "remote", applicant_location: str = "india") -> list[JobListing]:
         """

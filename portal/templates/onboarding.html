@@ -708,17 +708,16 @@
                     <div class="hint">Comma-separated. Be specific — include seniority, domain, specialization.</div>
                     <div id="scanStatus" style="display:none; margin-bottom:8px; padding:6px 10px; background:rgba(0,206,201,0.08); border-radius:8px; border:1px solid rgba(0,206,201,0.2);"></div>
                     <input type="text" class="search-input" id="roleInput" name="desired_roles"
-                        placeholder="e.g. Staff Android Engineer, Senior AI/ML Engineer, Principal Mobile Architect"
+                        placeholder="e.g. Senior Audit Manager, Staff Mobile Engineer, Marketing Director"
                         autocomplete="off" />
+                    <!-- Suggestion chips are populated dynamically by onboarding.js
+                         from the resume scan output. We intentionally do NOT seed
+                         them with engineering roles — that biased the search for
+                         non-engineering candidates. -->
                     <div class="suggestions">
-                        <span class="suggestion-chip" onclick="addRole(this)">Staff Android Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Senior AI/ML Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Mobile Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Full Stack Developer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">DevOps Engineer</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Data Scientist</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Product Manager</span>
-                        <span class="suggestion-chip" onclick="addRole(this)">Principal Engineer</span>
+                        <span style="color:var(--text2); font-size:12px; padding:6px;">
+                            Upload a resume to get role suggestions tailored to your background.
+                        </span>
                     </div>
                 </div>
             </div>
