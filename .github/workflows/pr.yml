@@ -42,6 +42,37 @@ jobs:
           DB_BACKEND: json
         run: pytest -q tests/ || (echo "::warning::tests failed or none collected"; exit 0)
 
+  frontend:
+    name: Frontend (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint (eslint)
+        run: npx eslint portal/static/js --ext .js --max-warnings=10
+
+      - name: Syntax check (node --check)
+        run: |
+          for f in portal/static/js/*.js; do
+            node --check "$f"
+          done
+
+      - name: Run tests (vitest)
+        run: npm test -- --reporter=default
+
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest

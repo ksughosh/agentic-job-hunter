@@ -207,3 +207,5 @@ const ResumeBuilder = (() => {
 
     return { build };
 })();
+
+if (typeof module !== 'undefined' && module.exports) { module.exports = ResumeBuilder; }

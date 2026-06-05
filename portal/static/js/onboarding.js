@@ -493,4 +493,7 @@ const OnboardingVM = (() => {
     return { init, addRole, setProvider, cancelPipeline, saveApiKey, saveGroqKey };
 })();
 
-document.addEventListener('DOMContentLoaded', () => OnboardingVM.init());
+if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('DOMContentLoaded', () => OnboardingVM.init());
+}
+if (typeof module !== 'undefined' && module.exports) { module.exports = OnboardingVM; }

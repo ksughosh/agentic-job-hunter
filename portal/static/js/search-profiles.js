@@ -173,7 +173,10 @@ const SearchProfiles = (() => {
         return (s || '').replace(/'/g, "\\'").replace(/</g, '&lt;');
     }
 
-    return { init, load, switchProfile, remove, showCreate, showEdit, hideModal, save };
+    return { init, load, switchProfile, remove, showCreate, showEdit, hideModal, save, _modeIcon, _esc };
 })();
 
-document.addEventListener('DOMContentLoaded', () => SearchProfiles.init());
+if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('DOMContentLoaded', () => SearchProfiles.init());
+}
+if (typeof module !== 'undefined' && module.exports) { module.exports = SearchProfiles; }

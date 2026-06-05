@@ -90,4 +90,7 @@ const UserPanel = (() => {
 })();
 
 // Bind on DOM ready
-document.addEventListener('DOMContentLoaded', () => UserPanel.init());
+if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('DOMContentLoaded', () => UserPanel.init());
+}
+if (typeof module !== 'undefined' && module.exports) { module.exports = UserPanel; }

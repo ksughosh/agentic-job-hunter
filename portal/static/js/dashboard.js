@@ -354,16 +354,16 @@ const DashboardVM = (() => {
     };
 })();
 
-document.addEventListener('DOMContentLoaded', () => {
-    DashboardVM.init();
-    SourcesVM.init();
-    // Bind modal backdrop click
-    const modal = document.getElementById('docModal');
-    if (modal) modal.addEventListener('click', e => { if (e.target === modal) DashboardVM.closeModal(); });
-    // Close add-source modal on backdrop click
-    const srcModal = document.getElementById('addSourceModal');
-    if (srcModal) srcModal.addEventListener('click', e => { if (e.target === srcModal) SourcesVM.closeAddModal(); });
-});
+if (typeof document !== 'undefined' && document.addEventListener && typeof window !== 'undefined' && !window.__JH_TEST__) {
+    document.addEventListener('DOMContentLoaded', () => {
+        DashboardVM.init();
+        SourcesVM.init();
+        const modal = document.getElementById('docModal');
+        if (modal) modal.addEventListener('click', e => { if (e.target === modal) DashboardVM.closeModal(); });
+        const srcModal = document.getElementById('addSourceModal');
+        if (srcModal) srcModal.addEventListener('click', e => { if (e.target === srcModal) SourcesVM.closeAddModal(); });
+    });
+}
 
 /**
  * Sources ViewModel
@@ -462,3 +462,7 @@ const SourcesVM = (() => {
 
     return { init, openAddModal, closeAddModal, addSource, removeSource, toggleSource };
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { DashboardVM, SourcesVM };
+}

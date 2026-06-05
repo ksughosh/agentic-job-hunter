@@ -59,3 +59,5 @@ const Api = (() => {
         toggleSource:   (name, enabled)     => _post('/api/sources/toggle', { name, enabled }),
     };
 })();
+
+if (typeof module !== 'undefined' && module.exports) { module.exports = Api; }
