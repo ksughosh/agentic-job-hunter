@@ -136,31 +136,34 @@ def call_provider(provider: str, prompt: str, max_tokens: int = 4096, temperatur
 
 
 def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
-    """Route to active provider, with automatic fallback to local providers
-    when the active one is a rate-limited / unavailable cloud provider.
+    """Unified entry point used by every LLM call site (jd_match, resume_writer,
+    cover_letter, talent_review, etc.). Follows the same cascade as the resume
+    scanner so the rule is identical wherever an LM is invoked:
 
-    Behavior:
-      - Try active provider first.
-      - If it returns empty AND the active is cloud (groq/gemini), try local
-        providers in this preference order: mlx → lmstudio → gemma. We don't
-        auto-fall to *another* cloud — that would silently spend money / quota
-        on a different account than the user picked.
-      - If the active is local and returns empty (model not loaded etc.), we
-        don't fall back — local failures are usually config issues the user
-        should see, not paper over.
+      1. Try the active provider (cloud OR local — whichever the user picked).
+      2. If empty AND the active is cloud, probe for a reachable local
+         provider (mlx → lmstudio → gemma). Retry against that local provider.
+      3. Return "" if everything failed.
+
+    We deliberately do NOT cascade cloud→cloud (avoid silently spending quota
+    on a different account) and do NOT cascade local→cloud (a local failure
+    is usually a config issue the user should see, not paper over with a
+    cloud spend).
     """
     primary = _dispatch(_active_provider, prompt, max_tokens, temperature)
     if primary:
         return primary
 
-    if _active_provider in ("groq", "gemini"):
-        for fb in ("mlx", "lmstudio", "gemma"):
-            if fb == _active_provider:
-                continue
-            result = _dispatch(fb, prompt, max_tokens, temperature)
+    if _active_provider in _CLOUD_PROVIDERS:
+        local = available_local_provider()
+        if local and local != _active_provider:
+            result = _dispatch(local, prompt, max_tokens, temperature)
             if result:
-                print(f"[LLM] {_active_provider} unavailable; fell back to {fb}", flush=True)
+                print(f"[LLM] {_active_provider} unavailable; fell back to local {local}", flush=True)
                 return result
+            print(f"[LLM] {_active_provider} unavailable; local {local} also failed", flush=True)
+        else:
+            print(f"[LLM] {_active_provider} unavailable; no local LM reachable", flush=True)
     return ""
 
 
