@@ -61,6 +61,10 @@ _active_provider = os.environ.get("LLM_PROVIDER", "mlx")
 _mlx_model = None
 _mlx_tokenizer = None
 
+# Groq rate-limit circuit breaker — set to a unix timestamp; all _call_groq
+# requests short-circuit until time.time() >= this value.
+_GROQ_BLOCK_UNTIL = 0.0
+
 
 def set_provider(provider: str):
     """Switch between 'gemini', 'gemma', and 'mlx'."""
@@ -96,23 +100,45 @@ def _call_groq(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) ->
     if not GROQ_API_KEY:
         print("[Groq] GROQ_API_KEY not set", flush=True)
         return ""
-    try:
-        resp = requests.post(
-            f"{GROQ_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": GROQ_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"[Groq] Error: {e}", flush=True)
+
+    # Free-tier circuit breaker — once we hit 429, hold off subsequent calls
+    # until the server-supplied Retry-After window elapses. Prevents the
+    # pipeline from spamming hundreds of 429s while parallel workers race.
+    global _GROQ_BLOCK_UNTIL
+    now = time.time()
+    if now < _GROQ_BLOCK_UNTIL:
         return ""
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"{GROQ_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                },
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                # Honor Retry-After if present, else exponential backoff.
+                ra = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+                wait = float(ra) if ra and ra.replace(".", "", 1).isdigit() else (10 * (attempt + 1))
+                wait = min(wait, 60.0)
+                _GROQ_BLOCK_UNTIL = time.time() + wait
+                print(f"[Groq] 429 rate-limited; blocking all calls for {wait:.0f}s", flush=True)
+                return ""
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except requests.exceptions.RequestException as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            print(f"[Groq] Error after {attempt+1} retries: {e}", flush=True)
+            return ""
+    return ""
 
 
 def _call_lmstudio(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
