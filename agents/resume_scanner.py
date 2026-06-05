@@ -18,42 +18,65 @@ from __future__ import annotations
 import json
 import re
 
-from agents.llm_client import call_llm
+from agents.llm_client import (
+    call_provider,
+    get_provider,
+    is_cloud,
+    available_local_provider,
+)
 
 
 def fast_scan_resume(raw_text: str, mode: str = "full") -> dict:
-    """Resume scan — role recommendations + profile + search queries.
+    """Resume scan with explicit cascade:
 
-    Two modes (latency vs completeness):
-      - mode="quick": minimal JSON for the onboarding UI (chips + scraping inputs).
-        Drops verbose token-hog fields (experience_entries bullets, education).
-        ~400 output tokens → ~5s on a local 4B model.
-      - mode="full": complete profile incl. experience_entries + education.
-        ~2500 output tokens → ~20s. Used to replace parse_resume_to_profile()
-        and refine_search_context() in the pipeline.
+      1. Local resume parsing without LM (always — heuristic baseline)
+      2. Active provider's LLM (cloud OR local, whichever user picked)
+      3. If active was cloud AND it failed AND a local LM is reachable
+         → retry against that local LM
+      4. Otherwise → return the heuristic-only result
 
-    The route runs "quick" synchronously (fast chips) then "full" in a
-    background thread to upgrade the cached result for the pipeline.
+    The LLM result, when present, is merged ON TOP of the heuristic baseline
+    via _fill_defaults so partial responses still get useful defaults (years,
+    seniority, name) from the regex parser.
+
+    Two latency modes:
+      - mode="quick": minimal JSON (~400 tok) for the onboarding UI.
+      - mode="full":  complete profile (~2500 tok) for the pipeline.
     """
     text = raw_text[:6000]
     prompt = _quick_prompt(text) if mode == "quick" else _full_prompt(text)
     max_tokens = 800 if mode == "quick" else 3000
 
-    response = call_llm(prompt, max_tokens=max_tokens, temperature=0.2)
+    # Step 1 — local heuristic baseline. Cheap, always succeeds.
+    baseline = _heuristic_scan(raw_text)
 
-    # Heuristic fallback
-    fallback = _heuristic_scan(raw_text)
+    # Step 2 — active provider.
+    active = get_provider()
+    print(f"[ScanResume] cascade start: active={active}, mode={mode}", flush=True)
+    response = call_provider(active, prompt, max_tokens=max_tokens, temperature=0.2)
 
+    # Step 3 — fall through to local LM only if active was cloud.
+    if not response and is_cloud(active):
+        local = available_local_provider()
+        if local:
+            print(f"[ScanResume] {active} returned empty; trying local {local}", flush=True)
+            response = call_provider(local, prompt, max_tokens=max_tokens, temperature=0.2)
+        else:
+            print(f"[ScanResume] {active} returned empty; no local LM available", flush=True)
+
+    # Step 4 — if every LM path failed, return the heuristic-only result.
     if not response:
-        return fallback
+        print("[ScanResume] all LMs failed; returning heuristic baseline", flush=True)
+        return baseline
 
     result = _parse_json_response(response)
     if not result:
-        return fallback
+        print("[ScanResume] LM response unparseable; returning heuristic baseline", flush=True)
+        return baseline
 
-    # Merge with heuristic fallback for any missing fields
-    _fill_defaults(result, fallback, raw_text)
-
+    # Merge LM output on top of the heuristic baseline so missing fields get
+    # a sensible default rather than disappearing.
+    _fill_defaults(result, baseline, raw_text)
     return result
 
 

@@ -82,12 +82,57 @@ def get_provider() -> str:
 # ─── Unified call_llm ─────────────────────────────────────────────────
 
 
+_CLOUD_PROVIDERS = ("gemini", "groq")
+_LOCAL_PROVIDERS = ("mlx", "lmstudio", "gemma")
+
+
 def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
     if provider == "mlx":      return _call_mlx(prompt, max_tokens, temperature)
     if provider == "lmstudio": return _call_lmstudio(prompt, max_tokens, temperature)
     if provider == "gemma":    return _call_gemma(prompt, max_tokens, temperature)
     if provider == "groq":     return _call_groq(prompt, max_tokens, temperature)
     return _call_gemini(prompt, max_tokens, temperature)
+
+
+def is_cloud(provider: str = "") -> bool:
+    return (provider or _active_provider) in _CLOUD_PROVIDERS
+
+
+def available_local_provider() -> str:
+    """Return the first reachable local provider id, or '' if none.
+
+    Probes cheap signals: LM Studio /models endpoint, Ollama tags, mlx_lm
+    package. Used by the scan cascade to decide whether a cloud failure can
+    fall through to local.
+    """
+    import requests as _req
+    # MLX (native) — pkg installed
+    try:
+        import mlx_lm  # noqa: F401
+        return "mlx"
+    except Exception:
+        pass
+    # LM Studio server
+    try:
+        if _req.get(f"{LMSTUDIO_BASE_URL}/models", timeout=2).status_code == 200:
+            return "lmstudio"
+    except Exception:
+        pass
+    # Ollama
+    try:
+        if _req.get(f"{OLLAMA_BASE}/api/tags", timeout=2).status_code == 200:
+            return "gemma"
+    except Exception:
+        pass
+    return ""
+
+
+def call_provider(provider: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
+    """Direct call to a named provider, bypassing the active-provider router.
+    Lets call sites that need an explicit cascade (e.g. the scan agent) pick
+    the order themselves instead of relying on call_llm's automatic fallback.
+    """
+    return _dispatch(provider, prompt, max_tokens, temperature)
 
 
 def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
