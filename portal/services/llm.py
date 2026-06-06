@@ -230,15 +230,24 @@ def detect_providers() -> dict:
 
     # Auto-prefer local: if the current active provider is cloud (or unavailable)
     # and a local provider is actually reachable, switch the server-side active
-    # to that local provider before returning. This honors the rule "default to
-    # local LM if available; only use cloud when no local exists" without
-    # requiring the user to click the toggle every session.
-    from agents.llm_client import set_provider as _set, available_local_provider
+    # to that local provider before returning.
+    #
+    # Reuse the probe results we already have (mlx_ok, lms_run, ollama_has_model)
+    # instead of calling available_local_provider() which would re-probe LM Studio
+    # /models and Ollama /api/tags — wasting ~4s of duplicate HTTP round-trips.
+    from agents.llm_client import set_provider as _set
     active = get_provider()
     active_p = next((p for p in providers if p["id"] == active), None)
     needs_switch = (active in ("gemini", "groq")) or (active_p and not active_p.get("available"))
     if needs_switch:
-        local_id = available_local_provider()
+        # Pick first available local from already-probed results
+        local_id = ""
+        if mlx_ok:
+            local_id = "mlx"
+        elif lms_run:
+            local_id = "lmstudio"
+        elif ollama_has_model:
+            local_id = "gemma"
         if local_id:
             try:
                 _set(local_id)

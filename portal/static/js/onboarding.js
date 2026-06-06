@@ -294,7 +294,8 @@ const OnboardingVM = (() => {
             });
             hidden.value = active;
             if (active) {
-                try { await Api.setProvider(active); } catch {}
+                // Server already switched in detect_providers() — no need to
+                // call Api.setProvider(active) again. Just update the UI.
                 const ap = list.find(p => p.id === active);
                 if (ap && status) {
                     status.textContent = ap.detail || '';
@@ -322,9 +323,11 @@ const OnboardingVM = (() => {
         } catch {
             if (status) { status.textContent = 'Cannot reach server'; status.style.color = 'var(--red)'; }
         }
-        // Re-scan with the new provider if a resume is already uploaded.
-        // Clears stale error banners from a previous provider failure.
-        if ($fileInput && $fileInput.files.length) {
+        // Re-scan only if the previous scan failed (stale error banner visible).
+        // Avoids a redundant LLM call when switching providers after a good scan.
+        const $scanStatus = document.getElementById('scanStatus');
+        const hadError = $scanStatus && $scanStatus.querySelector('[style*="color:var(--red)"]');
+        if (hadError && $fileInput && $fileInput.files.length) {
             _scanResume($fileInput.files[0]);
         }
     }
