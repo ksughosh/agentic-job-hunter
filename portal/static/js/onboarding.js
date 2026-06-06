@@ -75,11 +75,16 @@ const OnboardingVM = (() => {
         $fileInput.addEventListener('change', _onFileSelect);
 
         // Re-scan with the new depth when the deep-scan toggle changes.
+        // Clear previously-selected roles so stale simple-scan picks don't
+        // bleed into the deep-scan result.
         const $deep = document.getElementById('deepScan');
         if ($deep) {
             $deep.addEventListener('change', () => {
                 const f = $fileInput.files[0];
-                if (f) _scanResume(f);
+                if (f) {
+                    $roleInput.value = '';
+                    _scanResume(f);
+                }
             });
         }
     }
@@ -94,23 +99,45 @@ const OnboardingVM = (() => {
         }
     }
 
+    let _scanInFlight = false;   // prevent concurrent scan requests
+
     async function _scanResume(file) {
         const $suggestions = document.querySelector('.suggestions');
         const $scanStatus = document.getElementById('scanStatus');
         if (!$suggestions) return;
+        if (_scanInFlight) return;  // scan already running — skip duplicate
+        _scanInFlight = true;
 
         const deep = !!(document.getElementById('deepScan') || {}).checked;
 
-        // Show scanning state
-        $suggestions.innerHTML = '<span style="color:var(--text2); font-size:12px; padding:6px;">&#x1f50d; '
-            + (deep ? 'Deep scanning resume (~20s)...' : 'Scanning resume for role recommendations...')
-            + '</span>';
+        // Show scanning state with animated spinner
+        const scanLabel = deep
+            ? 'Deep scanning resume — analyzing skills, experience, and education (~20s)...'
+            : 'Scanning resume for role recommendations (~3s)...';
+        $suggestions.innerHTML = `
+            <div style="display:flex; align-items:center; gap:10px; padding:10px 6px; color:var(--text2); font-size:12px;">
+                <span class="scan-spinner"></span>
+                <span id="scanProgressText">${scanLabel}</span>
+            </div>`;
+        if ($scanStatus) { $scanStatus.style.display = 'none'; }
+
+        // Cycle progress text so user sees activity
+        const _phases = deep
+            ? ['Extracting text from PDF...', 'Parsing skills and experience...', 'Identifying domain and seniority...', 'Building role recommendations...', 'Generating search queries...']
+            : ['Reading resume...', 'Identifying key skills...', 'Building recommendations...'];
+        let _phaseIdx = 0;
+        const _phaseTimer = setInterval(() => {
+            _phaseIdx = (_phaseIdx + 1) % _phases.length;
+            const el = document.getElementById('scanProgressText');
+            if (el) el.textContent = _phases[_phaseIdx];
+        }, deep ? 4000 : 1200);
 
         try {
             const fd = new FormData();
             fd.append('resume', file);
             fd.append('mode', deep ? 'deep' : 'quick');
             const data = await Api.scanResume(fd);
+            clearInterval(_phaseTimer);
 
             if (!data.ok) {
                 $suggestions.innerHTML = _defaultChips();
@@ -151,8 +178,11 @@ const OnboardingVM = (() => {
                 $suggestions.innerHTML = _defaultChips();
             }
         } catch (err) {
+            clearInterval(_phaseTimer);
             console.error('Resume scan failed:', err);
             $suggestions.innerHTML = _defaultChips();
+        } finally {
+            _scanInFlight = false;
         }
     }
 
@@ -289,7 +319,8 @@ const OnboardingVM = (() => {
             });
             hidden.value = active;
             if (active) {
-                try { await Api.setProvider(active); } catch {}
+                // Server already switched in detect_providers() — no need to
+                // call Api.setProvider(active) again. Just update the UI.
                 const ap = list.find(p => p.id === active);
                 if (ap && status) {
                     status.textContent = ap.detail || '';
@@ -316,6 +347,13 @@ const OnboardingVM = (() => {
             }
         } catch {
             if (status) { status.textContent = 'Cannot reach server'; status.style.color = 'var(--red)'; }
+        }
+        // Re-scan only if the previous scan failed (stale error banner visible).
+        // Avoids a redundant LLM call when switching providers after a good scan.
+        const $scanStatus = document.getElementById('scanStatus');
+        const hadError = $scanStatus && $scanStatus.querySelector('[style*="color:var(--red)"]');
+        if (hadError && $fileInput && $fileInput.files.length) {
+            _scanResume($fileInput.files[0]);
         }
     }
 
@@ -354,10 +392,15 @@ const OnboardingVM = (() => {
 
     // ── Progress / Pipeline ──
 
+    let _verbose = false;
+
     function _showProgress() {
         $form.style.display = 'none';
         $progressSection.classList.add('active');
         $cancelBtn.style.display = 'inline-block';
+        // Remove any leftover retry button
+        const old = document.getElementById('retryBtn');
+        if (old) old.remove();
     }
 
     function _hideProgress() {
@@ -371,7 +414,7 @@ const OnboardingVM = (() => {
                 const data = await Api.searchStatus();
                 $progressFill.style.width = data.progress + '%';
                 $progressStatus.innerHTML = data.message;
-                _updateSteps(data.progress);
+                _updateSteps(data.progress, data.message);
                 _updateSourceTicker(data);
 
                 if (!data.running && data.progress >= 100) {
@@ -383,19 +426,40 @@ const OnboardingVM = (() => {
                     clearInterval(_pollInterval);
                     _hideProgress();
                     $progressStatus.innerHTML = '<span style="color:var(--red);">' + data.message + '</span>';
-                    setTimeout(() => {
-                        $form.style.display = 'block';
-                        $progressSection.classList.remove('active');
-                    }, 3000);
+                    _showRetryButton();
                 }
             } catch { /* retry next tick */ }
         }, 1500);
     }
 
+    function _showRetryButton() {
+        if (document.getElementById('retryBtn')) return;
+        const btn = document.createElement('button');
+        btn.id = 'retryBtn';
+        btn.textContent = '↻ Retry Pipeline';
+        btn.style.cssText = 'margin-top:14px; padding:8px 20px; border-radius:8px; border:1px solid var(--accent2); background:transparent; color:var(--accent2); cursor:pointer; font-size:13px; font-weight:600;';
+        btn.onclick = () => {
+            btn.remove();
+            // Re-submit the form to restart the pipeline
+            $form.style.display = 'block';
+            $progressSection.classList.remove('active');
+            _resetSteps();
+        };
+        $progressStatus.parentElement.appendChild(btn);
+    }
+
     async function cancelPipeline() {
         $cancelBtn.disabled = true;
         $cancelBtn.style.opacity = '0.4';
-        try { await Api.cancelPipeline(); } catch { /* polling catches it */ }
+        try {
+            const r = await Api.cancelPipeline();
+            // If user was removed (no results yet), redirect to fresh start
+            if (r && r.removed) {
+                clearInterval(_pollInterval);
+                window.location.href = '/start?new=1';
+                return;
+            }
+        } catch { /* polling catches it */ }
     }
 
     // ── Pipeline Step Connectors ──
@@ -422,18 +486,26 @@ const OnboardingVM = (() => {
         const active = data.current_source || '';
 
         // Build chip set: completed + active
-        $sourceChips.innerHTML = done.map(s => `
-            <span style="
+        const okBg   = 'rgba(0,206,201,0.12)',  okC   = 'var(--green)', okB   = 'rgba(0,206,201,0.3)';
+        const failBg = 'rgba(225,112,85,0.12)', failC = 'var(--red)',   failB = 'rgba(225,112,85,0.3)';
+
+        $sourceChips.innerHTML = done.map(s => {
+            const bg = s.ok ? okBg : failBg;
+            const c  = s.ok ? okC  : failC;
+            const b  = s.ok ? okB  : failB;
+            const icon = s.ok ? '✓' : '✗';
+            const countLabel = s.count ? ` <span style="opacity:0.6">(${s.count})</span>` : '';
+            // Verbose: show error reason inline; always show on hover
+            const errText = s.error ? ` — ${s.error}` : '';
+            const tooltip = s.error || (s.ok ? `${s.count} jobs` : 'no results');
+            const detail = _verbose && s.error ? `<span style="font-size:9px;opacity:0.7;">${errText}</span>` : '';
+            return `<span title="${tooltip}" style="
                 display:inline-flex; align-items:center; gap:4px;
                 padding:3px 9px; border-radius:20px; font-size:11px; font-weight:500;
-                background:${s.ok ? 'rgba(0,206,201,0.12)' : 'rgba(225,112,85,0.12)'};
-                color:${s.ok ? 'var(--green)' : 'var(--red)'};
-                border:1px solid ${s.ok ? 'rgba(0,206,201,0.3)' : 'rgba(225,112,85,0.3)'};
-                white-space:nowrap;
-            ">
-                ${s.ok ? '✓' : '✗'} ${s.name}${s.count ? ' <span style="opacity:0.6">('+s.count+')</span>' : ''}
-            </span>`
-        ).join('') + (active ? `
+                background:${bg}; color:${c}; border:1px solid ${b};
+                white-space:nowrap; cursor:default;
+            ">${icon} ${s.name}${countLabel}${detail}</span>`;
+        }).join('') + (active ? `
             <span style="
                 display:inline-flex; align-items:center; gap:5px;
                 padding:3px 9px; border-radius:20px; font-size:11px; font-weight:600;
@@ -448,19 +520,41 @@ const OnboardingVM = (() => {
 
     function _resetSteps() {
         STAGES.forEach(s => {
-            document.getElementById('pipe-' + s.id).classList.remove('done', 'active');
+            const el = document.getElementById('pipe-' + s.id);
+            el.classList.remove('done', 'active');
+            const det = el.querySelector('.step-detail');
+            if (det) det.textContent = '';
         });
         [1, 2, 3, 4].forEach(i => {
             document.getElementById('conn-' + i).classList.remove('done', 'active');
         });
     }
 
-    function _updateSteps(progress) {
+    function _updateSteps(progress, statusMsg) {
         STAGES.forEach((s, i) => {
             const el = document.getElementById('pipe-' + s.id);
             if (progress >= s.done)       { el.classList.add('done'); el.classList.remove('active'); }
             else if (progress >= s.active) { el.classList.add('active'); el.classList.remove('done'); }
             else                           { el.classList.remove('done', 'active'); }
+
+            // Verbose detail: show debug info under each step (not the status text)
+            let det = el.querySelector('.step-detail');
+            if (!det) {
+                det = document.createElement('div');
+                det.className = 'step-detail';
+                el.appendChild(det);
+            }
+            if (!_verbose) {
+                det.style.display = 'none';
+            } else if (el.classList.contains('active')) {
+                det.textContent = _stepDebugInfo(s.id, progress, statusMsg);
+                det.style.display = 'block';
+            } else if (el.classList.contains('done')) {
+                det.textContent = '✓ complete';
+                det.style.display = 'block';
+            } else {
+                det.style.display = 'none';
+            }
         });
         for (let i = 1; i <= 4; i++) {
             const conn = document.getElementById('conn-' + i);
@@ -474,6 +568,48 @@ const OnboardingVM = (() => {
                 conn.classList.remove('done', 'active');
             }
         }
+    }
+
+    function _stepDebugInfo(stepId, progress, msg) {
+        // Extract meaningful debug detail from server status message per step
+        switch (stepId) {
+            case 'parse':
+                if (progress < 10) return 'reading PDF...';
+                if (progress < 15) return 'extracting profile fields';
+                return 'profile extracted';
+            case 'refine':
+                if (/refin/i.test(msg)) return 'LLM refining queries';
+                if (/reuse/i.test(msg)) return 'using cached scan';
+                return 'building search params';
+            case 'scrape': {
+                const m = msg.match(/(\d+)\/(\d+)\s*sources/);
+                if (m) return `${m[1]}/${m[2]} sources polled`;
+                return 'dispatching scrapers';
+            }
+            case 'company':
+                if (/(\d+)\s*companies/i.test(msg)) return msg.match(/(\d+)\s*companies/i)[0];
+                return 'reviewing companies';
+            case 'match': {
+                const jm = msg.match(/(\d+)\/(\d+)\s*jobs?\s*scored/i);
+                if (jm) return `LLM scoring ${jm[1]}/${jm[2]}`;
+                if (/heuristic/i.test(msg)) return 'heuristic pre-filter';
+                if (/saving/i.test(msg)) return 'persisting to DB';
+                return 'JD matching';
+            }
+            default: return '';
+        }
+    }
+
+    function toggleVerbose() {
+        _verbose = !_verbose;
+        const btn = document.getElementById('verboseBtn');
+        if (btn) {
+            btn.classList.toggle('active', _verbose);
+            btn.title = _verbose ? 'Hide step details' : 'Show step details';
+        }
+        // Immediately refresh step details
+        const data = { progress: parseFloat($progressFill.style.width) || 0, message: $progressStatus.textContent };
+        _updateSteps(data.progress, data.message);
     }
 
     // ── API Key ──
@@ -497,7 +633,7 @@ const OnboardingVM = (() => {
         if (data.ok) _renderProviders();
     }
 
-    return { init, addRole, setProvider, cancelPipeline, saveApiKey, saveGroqKey };
+    return { init, addRole, setProvider, cancelPipeline, toggleVerbose, saveApiKey, saveGroqKey };
 })();
 
 if (typeof document !== 'undefined' && document.addEventListener) {

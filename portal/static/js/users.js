@@ -64,7 +64,7 @@ const UserPanel = (() => {
                 <div class="user-meta">Created ${new Date(u.created_at).toLocaleDateString()}</div>
                 ${roles}
                 <div>${badges}</div>
-                <button class="user-delete" onclick="event.stopPropagation(); UserPanel.deleteUser('${u.id}', '${u.name}')" title="Delete profile">&times;</button>
+                <button class="user-delete" onclick="event.stopPropagation(); UserPanel.deleteUser('${u.id}', '${u.name}', ${u.has_results || u.pipeline_running})" title="Delete profile">&times;</button>
             `;
             $list.appendChild(card);
         });
@@ -76,12 +76,22 @@ const UserPanel = (() => {
     }
 
     async function addNewUser() {
-        const data = await Api.createUser('New User');
-        if (data.ok) window.location.href = data.redirect;
+        // Check if current user has a running pipeline — don't orphan it
+        try {
+            const status = await Api.searchStatus();
+            if (status && status.running) {
+                alert('A pipeline is currently running. Cancel it first before creating a new profile.');
+                return;
+            }
+        } catch {}
+        // Navigate to onboarding. User record created lazily on scan success.
+        window.location.href = '/start?new=1';
     }
 
-    async function deleteUser(userId, name) {
-        if (!confirm(`Delete profile "${name}"? This removes it from the list but keeps the data folder.`)) return;
+    async function deleteUser(userId, name, hasData) {
+        // Prompt only if profile has results or pipeline is running.
+        // Failed/incomplete profiles clear silently.
+        if (hasData && !confirm(`Delete profile "${name}"?`)) return;
         const data = await Api.deleteUser(userId);
         if (data.ok) window.location.href = data.redirect;
     }

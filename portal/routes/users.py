@@ -61,7 +61,12 @@ def switch(user_id):
 
 @bp.route("/delete/<user_id>", methods=["POST"])
 def delete(user_id):
-    """Delete a user profile."""
+    """Delete a user profile. Cancel any running pipeline first."""
+    # Cancel pipeline immediately so LLM workers stop
+    status = pipeline.get_status(user_id)
+    if status.get("running"):
+        pipeline.request_cancel(user_id)
+
     current = user_model.current_id()
     user_model.delete(user_id)
     users = user_model.get_all()

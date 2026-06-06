@@ -278,6 +278,11 @@ def run_agents(user_id: str, profile: dict, search_queries: list,
 
         run_id = db.create_pipeline_run(user_id, work_mode, search_queries, desired_role)
 
+        # Inject user-typed desired roles into the profile so downstream
+        # filters (domain relevance) can use them as allow-keywords.
+        if desired_role and "desired_roles" not in profile:
+            profile["desired_roles"] = [r.strip() for r in desired_role.split(",") if r.strip()]
+
         # ── Agent 1: Scrape ──
         raw_jobs, scraper = _run_scraper(user_id, profile, search_queries, work_mode)
         _check_cancel(user_id)
@@ -425,8 +430,16 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
     cancel_event = threading.Event()
     scraped_sources = []
 
-    def _on_source_done(source_name, count, ok, completed, total):
-        scraped_sources.append({"name": source_name, "count": count, "ok": ok})
+    def _on_source_done(source_name, count, ok, completed, total, error=""):
+        # A scraper that returns 0 jobs without an exception is still a failure
+        # (likely 403/CAPTCHA/timeout) — mark it red so the chip reflects reality.
+        effective_ok = ok and (count > 0)
+        scraped_sources.append({
+            "name": source_name,
+            "count": count,
+            "ok": effective_ok,
+            "error": error[:80] if error else ("0 results" if ok and count == 0 else ""),
+        })
         if _is_cancelled(user_id):
             cancel_event.set()
         pct = 25 + int((completed / total) * 20)  # 25% → 45%
@@ -471,6 +484,29 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
         dropped = before_seniority - len(filtered)
         if dropped:
             print(f"  🎯 Seniority filter: dropped {dropped} junior/mid roles ({years_exp}+ yrs experience)", flush=True)
+
+    # Domain relevance filter: for non-tech profiles, drop jobs whose title
+    # clearly belongs to a different profession (e.g. "Software Engineer" for
+    # a CA/finance candidate).  Tech profiles skip this — their scrapers
+    # already return relevant results.
+    if profile_domain and not any(t in profile_domain.lower() for t in
+            ("software", "engineering", "mobile", "backend", "frontend",
+             "full-stack", "fullstack", "devops", "data", "ml", "ai", "tech")):
+        # Inject desired_roles so filter can use them as allow-keywords.
+        # search_queries may contain user-typed role strings; also pull
+        # from profile if already set.
+        profile_with_roles = dict(profile)
+        roles_acc = list(profile.get("desired_roles") or [])
+        for q in search_queries or []:
+            if isinstance(q, str) and q.strip():
+                roles_acc.append(q.strip())
+        if roles_acc:
+            profile_with_roles["desired_roles"] = roles_acc
+        before_domain = len(filtered)
+        filtered = _filter_domain_relevance(filtered, profile_with_roles)
+        dropped = before_domain - len(filtered)
+        if dropped:
+            print(f"  🎯 Domain filter: dropped {dropped} off-domain jobs for '{profile_domain}' profile", flush=True)
 
     scraper.stats["total_unique"] = len(filtered)
     scraper.stats["total_before_filter"] = len(unique)
@@ -517,6 +553,121 @@ def _filter_seniority(jobs: list, years_exp: int) -> list:
         # Drop if JD explicitly asks for very low experience (1-3 yrs) in first 500 chars
         if years_exp >= 8 and any(re.search(p, desc_start) for p in LOW_EXP_PATTERNS):
             continue
+
+        kept.append(job)
+
+    return kept
+
+
+def _filter_domain_relevance(jobs: list, profile: dict) -> list:
+    """Drop jobs whose title clearly belongs to a different profession.
+
+    Uses TWO strategies:
+      1. Domain-specific allow-lists — for finance/marketing/HR/etc. profiles,
+         only keep titles containing recognized vocabulary from that domain.
+         Generic titles (Manager, Analyst, Consultant, Director) are also kept
+         so the JD matcher can score them on description content.
+      2. Tech deny-list — additionally drop unambiguous off-domain tech titles
+         that slip through the generic allow.
+    """
+    import re
+
+    domain = (profile.get("domain") or "").lower()
+    skills = {s.lower() for s in (profile.get("primary_skills") or [])}
+    domain_kw = {s.lower() for s in (profile.get("domain_keywords") or [])}
+    desired_roles = {s.lower() for s in (profile.get("desired_roles") or [])}
+    candidate_words = skills | domain_kw | desired_roles | {domain}
+
+    # Domain → allow-list vocabulary. If the profile domain matches a key,
+    # only titles containing one of these terms (or a generic title word)
+    # survive.  Add new domains here as needed.
+    DOMAIN_ALLOWLISTS = {
+        "finance": {"accountant", "accounting", "audit", "auditor", "finance",
+                    "financial", "cfo", "controller", "treasury", "compliance",
+                    "tax", "fp&a", "fpa", "bookkeep", "cpa", "ca ", " ca,",
+                    "chartered", "actuary", "actuarial", "risk", "credit",
+                    "investment", "banking", "banker", "underwrit", "claims",
+                    "billing", "payroll", "ledger", "reconcil"},
+        "marketing": {"marketing", "brand", "growth", "seo", "content",
+                      "social media", "copywrit", "communications", "pr ",
+                      "public relations", "advertising", "campaign", "media buy"},
+        "hr": {"hr ", "human resources", "people ops", "talent", "recruit",
+               "compensation", "benefits", "employee", "training", "l&d",
+               "learning", "diversity", "workforce"},
+        "sales": {"sales", "account exec", "ae ", "business development",
+                  "bd ", "bdr", "sdr", "partnerships", "revenue", "go-to-market"},
+        "legal": {"legal", "counsel", "attorney", "lawyer", "compliance",
+                  "paralegal", "contracts"},
+        "operations": {"operations", "ops ", "supply chain", "logistics",
+                       "procurement", "vendor", "project manager", "pmo"},
+        "design": {"design", "ux", "ui ", "user experience", "user interface",
+                   "product designer", "graphic", "visual"},
+    }
+
+    # Pick the matching domain (substring match on profile domain)
+    allowed_terms: set[str] = set()
+    for d, terms in DOMAIN_ALLOWLISTS.items():
+        if d in domain:
+            allowed_terms = terms
+            break
+
+    # Generic title words — kept regardless of domain. JD matcher scores
+    # them on description content.
+    GENERIC_OK = {"manager", "director", "head of", "vp ", "vice president",
+                  "chief", "lead", "principal", "senior consultant",
+                  "associate", "specialist", "executive", "analyst",
+                  "consultant", "advisor", "coordinator", "administrator"}
+
+    # Tech titles to drop even if they pass the allow-list (rare but possible
+    # for terms like "data analyst" → "data scientist")
+    TECH_DENY_PATTERNS = [
+        r"\bsoftware\s+(?:engineer|developer|architect)",
+        r"\b(?:frontend|front[\s-]end|backend|back[\s-]end|full[\s-]?stack)\s+(?:engineer|developer)",
+        r"\bdevops\s+engineer", r"\bsite\s+reliability", r"\bsre\b",
+        r"\bplatform\s+engineer", r"\binfrastructure\s+engineer",
+        r"\bcloud\s+engineer", r"\bdata\s+engineer", r"\bdata\s+scientist",
+        r"\bmachine\s+learning\s+engineer", r"\bml\s+engineer",
+        r"\bai\s+engineer", r"\bai\s+(?:research|cinematic|video)",
+        r"\b(?:android|ios|mobile|web)\s+(?:engineer|developer)",
+        r"\b(?:ruby|java|python|node\.?js|react|rust|golang|c\+\+|kotlin|swift)\s+(?:developer|engineer)",
+        r"\bquality\s+(?:assurance\s+)?engineer", r"\bqa\s+engineer",
+        r"\bsecurity\s+engineer", r"\bnetwork\s+engineer",
+        r"\bsystems?\s+engineer", r"\bembedded\s+(?:engineer|developer)",
+        r"\bengineering\s+manager", r"\bproduct\s+engineer",
+        r"\bvideo\s+editor", r"\bcinematic", r"\bgame\s+(?:developer|engineer)",
+        r"\bsolutions?\s+architect", r"\btechnical\s+architect",
+        r"\bblockchain", r"\bcrypto", r"\bweb3",
+    ]
+    deny_compiled = [re.compile(p, re.IGNORECASE) for p in TECH_DENY_PATTERNS]
+
+    # Build candidate-token set for domain check (skip very short tokens
+    # like "ca" alone — too noisy).  Length>=4 chars unless it's an
+    # acronym in the explicit allowed_terms list.
+    candidate_check = {cw for cw in candidate_words if len(cw) >= 4}
+
+    kept = []
+    for job in jobs:
+        title = (job.get("title", "") if isinstance(job, dict) else getattr(job, "title", "")).lower()
+        if not title:
+            kept.append(job)
+            continue
+
+        # Hard-deny: unambiguous tech titles always dropped for non-tech profile
+        if any(p.search(title) for p in deny_compiled):
+            # Unless the profile's own skills/keywords appear in the title
+            # (e.g. a finance candidate searching for "Finance Data Analyst"
+            # where their resume contains "data analyst")
+            if not any(cw in title for cw in candidate_check):
+                continue
+
+        # If we have a domain allow-list, require at least ONE match from
+        # allowed terms OR generic title words OR candidate keywords.
+        if allowed_terms:
+            has_allowed = any(t in title for t in allowed_terms)
+            has_generic = any(g in title for g in GENERIC_OK)
+            has_candidate = any(cw in title for cw in candidate_check)
+            if not (has_allowed or has_generic or has_candidate):
+                continue
 
         kept.append(job)
 
@@ -636,20 +787,14 @@ def _run_company_review_cached(jobs: list[dict]):
     return all_reviews
 
 
-def _get_local_parallel() -> int:
-    """Number of concurrent LLM requests for local providers (LM Studio / Ollama).
+def _get_parallel() -> int:
+    """Max concurrent LLM requests for the active provider.
 
-    Both LM Studio's MLX engine and Ollama batch concurrent requests. Measured
-    on M5 Pro: aggregate throughput knees at ~4-5 concurrent (≈2.8x a single
-    request); beyond that it saturates (8 ≈ 4). Default 6 captures the knee with
-    margin. Override with LLM_NUM_PARALLEL (falls back to OLLAMA_NUM_PARALLEL).
+    Delegates to the provider registry in llm_client which holds per-provider
+    defaults and checks env overrides (LLM_NUM_PARALLEL, OLLAMA_NUM_PARALLEL).
     """
-    import os
-    for var in ("LLM_NUM_PARALLEL", "OLLAMA_NUM_PARALLEL"):
-        env_val = os.environ.get(var, "")
-        if env_val.isdigit() and int(env_val) > 0:
-            return int(env_val)
-    return 6
+    from agents.llm_client import get_parallel
+    return get_parallel()
 
 
 # ─── JD Match ─────────────────────────────────────────────────────
@@ -661,7 +806,8 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
     from portal.services.parallel import heuristic_top_n, jd_match_parallel
 
     # Determine if local model — use parallel + heuristic pre-filter
-    is_local = get_provider() in ("gemma", "ollama", "local", "mlx")
+    from agents.llm_client import is_cloud
+    is_local = not is_cloud(get_provider())
 
     # jobs from DB are dicts already
     job_dicts = jobs if all(isinstance(j, dict) for j in jobs) else [asdict(j) if not isinstance(j, dict) else j for j in jobs]
@@ -698,8 +844,8 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
         _set(user_id, f"Agent 3: Matching JDs... {done}/{total} jobs scored", pct)
 
     if is_local:
-        # Concurrent request capacity for the local LLM server
-        local_workers = _get_local_parallel()
+        # Concurrent request capacity from provider registry
+        local_workers = _get_parallel()
         print(f"  ⚡ Local LLM: {local_workers} parallel workers", flush=True)
         reviewed = jd_match_parallel(
             agent, llm_jobs, company_reviews,
@@ -745,6 +891,10 @@ def _save_analyses_to_db(user_id, reviewed_jobs, jd_agent, db_jobs):
             url = rd.get("url", rd.get("source_url", ""))
             job_id = url_to_id.get(url)
             if not job_id:
+                continue
+            # Drop zero-match jobs — JD matcher found no overlap with profile,
+            # not worth surfacing on dashboard or storing.
+            if float(rd.get("match_score", 0) or 0) <= 0:
                 continue
             analyses.append({
                 "job_id": job_id,
@@ -824,6 +974,10 @@ def _save_local_results(user_id, profile, scraper, jd_agent=None, reviewed_jobs=
                 job_dicts.append(merged)
     except Exception as e:
         print(f"  ⚠️ Could not merge DB analyses: {e}", flush=True)
+
+    # Drop zero-match jobs from dashboard — JD matcher found no profile overlap.
+    if isinstance(job_dicts, list):
+        job_dicts = [j for j in job_dicts if float(j.get("match_score", 0) or 0) > 0]
 
     results = {
         "jobs": job_dicts if isinstance(job_dicts, list) else [],

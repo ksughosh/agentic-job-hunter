@@ -381,6 +381,13 @@ else
     warn "No LLM provider configured. Install MLX/Ollama/LM Studio or set Gemini/Groq key."
 fi
 
+# ── Speculative Decoding (MTP) hint ──
+if [[ $MLX_FOUND -eq 1 ]]; then
+    info "💡 Speed tip: enable speculative decoding (MTP) for ~2-3x throughput"
+    info "   Native mlx-lm: set MLX_DRAFT_MODEL=gemma-3-1b-it-4bit in .env"
+    info "   LM Studio: Settings → Inference → Speculative Decoding → enable + load draft model"
+fi
+
 # ─── Step 4: Verify configuration ────────────────────────────────
 
 step 4 "Verifying configuration"

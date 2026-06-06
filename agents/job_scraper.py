@@ -1077,16 +1077,19 @@ class LinkedInScraper(AutoHealingScraper):
         if not any(kw.lower() in combined for kw in keywords):
             return None
 
+        # The guest API was queried with f_WT=2 (remote) so the listing IS
+        # remote — bake that into description + tags so downstream
+        # _filter_eligibility's REMOTE_SIGNALS check passes.
         return JobListing(
             title=title[:120],
             company=company[:80],
             location=location,
             salary="",
             job_type="full time",
-            description=f"{title} at {company}. Location: {location}",
+            description=f"Remote {title} at {company}. Location: {location}. Work from anywhere.",
             url=url,
             source="LinkedIn",
-            tags=[],
+            tags=["remote"],
             posted_date=posted,
             region="Global",
             source_quality=SOURCE_QUALITY.get("LinkedIn", 92),
@@ -2125,9 +2128,16 @@ class JobSpyScraper(AutoHealingScraper):
         if self.applicant_location:
             google_q += f" in {self.applicant_location}"
 
-        try:
-            self.stats["attempts"] += 1
-            df = _jobspy_scrape(
+        # Strategy: try LinkedIn description fetch (gives employer's direct
+        # apply URL in job_url_direct) with a wallclock budget. If it runs
+        # too long, abandon and re-scrape without the fetch — the
+        # _df_to_listings step will then synthesize a Google search URL for
+        # any LinkedIn job missing a direct apply link.
+        import concurrent.futures, time as _time
+        LINKEDIN_FETCH_BUDGET_S = 5.0  # extra time allowed for description fetch
+
+        def _do_scrape(fetch_linkedin: bool):
+            return _jobspy_scrape(
                 site_name=self.sites,
                 search_term=search_term,
                 google_search_term=google_q,
@@ -2135,8 +2145,30 @@ class JobSpyScraper(AutoHealingScraper):
                 results_wanted=self.results_wanted,
                 hours_old=self.hours_old,
                 country_indeed=self.country_indeed,
+                linkedin_fetch_description=fetch_linkedin,
                 verbose=0,
             )
+
+        df = None
+        try:
+            self.stats["attempts"] += 1
+            t0 = _time.time()
+            # Estimate baseline (non-fetch) time conservatively. The 5s
+            # LINKEDIN_FETCH_BUDGET_S is the EXTRA time we allow for the
+            # description fetch on top of the baseline scrape.
+            base_budget = max(8.0, min(15.0, self.results_wanted * 0.4))
+            total_budget = base_budget + LINKEDIN_FETCH_BUDGET_S
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_do_scrape, True)
+                try:
+                    df = fut.result(timeout=total_budget)
+                    elapsed = _time.time() - t0
+                    if elapsed > total_budget:
+                        print(f"  ⚠️  JobSpy linkedin_fetch took {elapsed:.1f}s (>{total_budget:.0f}s budget)", flush=True)
+                except concurrent.futures.TimeoutError:
+                    print(f"  ⚠️  JobSpy linkedin_fetch exceeded {total_budget:.0f}s — retrying without LinkedIn description fetch (will fall back to Google search URLs for LinkedIn jobs)", flush=True)
+                    # Abandon the slow future and retry without LinkedIn fetch
+                    df = _do_scrape(False)
             self.stats["successes"] += 1
         except Exception as e:
             self.stats["failures"] += 1
@@ -2144,9 +2176,12 @@ class JobSpyScraper(AutoHealingScraper):
             return []
 
         if df is None or len(df) == 0:
+            print(f"  [{self.name}] No results returned", flush=True)
             return []
 
-        return self._df_to_listings(df)
+        listings = self._df_to_listings(df)
+        print(f"  [{self.name}] Found {len(listings)} jobs from {len(df)} raw rows ({', '.join(self.sites)})", flush=True)
+        return listings
 
     def _df_to_listings(self, df):
         """Convert a JobSpy DataFrame into our JobListing dataclass."""
@@ -2190,12 +2225,52 @@ class JobSpyScraper(AutoHealingScraper):
                     jt_norm = "full-time"
 
                 desc = str(row.get("description") or "").strip()
-                url = str(row.get("job_url_direct") or row.get("job_url") or "").strip()
+                # LinkedIn fast-path returns empty descriptions. Synthesize
+                # one with title+company+location so _filter_eligibility's
+                # REMOTE_SIGNALS check still passes when is_remote=True.
+                _site_is_remote = bool(row.get("is_remote", False))
+                if not desc:
+                    _loc_hint = str(row.get("location") or "").strip()
+                    parts = [title or "", "at", company or ""]
+                    if _loc_hint:
+                        parts += [".", "Location:", _loc_hint]
+                    if _site_is_remote:
+                        parts += [".", "Remote position. Work from anywhere."]
+                    desc = " ".join(p for p in parts if p)
+
+                def _clean_url(v) -> str:
+                    """str() of pandas NaN is 'nan' (truthy) — guard against it."""
+                    import math as _m
+                    if v is None:
+                        return ""
+                    if isinstance(v, float) and _m.isnan(v):
+                        return ""
+                    s = str(v).strip()
+                    return "" if s.lower() in ("nan", "none", "null") else s
+
+                # Prefer the direct employer apply URL when JobSpy enriched
+                # the row with it (only available for LinkedIn when
+                # linkedin_fetch_description=True). Fall back to the board URL.
+                url = _clean_url(row.get("job_url_direct")) or _clean_url(row.get("job_url"))
+
+                # For LinkedIn results missing a direct apply URL (e.g. when
+                # the linkedin_fetch_description budget was exceeded), build
+                # a Google search URL so the user still has a working apply
+                # path instead of the LinkedIn landing page that often blocks
+                # non-logged-in users.
+                if site == "linkedin" and not _clean_url(row.get("job_url_direct")):
+                    from urllib.parse import quote_plus as _qp
+                    q = _qp(f'{title} {company} apply')
+                    url = f"https://www.google.com/search?q={q}"
+
                 if not url:
                     continue
 
-                sal_min = float(row.get("min_amount") or 0) or 0
-                sal_max = float(row.get("max_amount") or 0) or 0
+                import math
+                _raw_min = row.get("min_amount")
+                _raw_max = row.get("max_amount")
+                sal_min = 0.0 if (_raw_min is None or (isinstance(_raw_min, float) and math.isnan(_raw_min))) else float(_raw_min)
+                sal_max = 0.0 if (_raw_max is None or (isinstance(_raw_max, float) and math.isnan(_raw_max))) else float(_raw_max)
                 currency = str(row.get("currency") or "USD").upper()[:3]
                 is_remote = bool(row.get("is_remote", False))
                 date_posted = str(row.get("date_posted") or "").strip()
@@ -2244,9 +2319,12 @@ class JobSearchAgent:
     # roles. Pipeline uses these to skip tech-only sources for non-tech
     # candidates (a Chartered Accountant should not be searched on Arc.dev
     # or GunIO — those return only engineering jobs).
+    # Keys MUST match the scraper's self.name (the string passed to
+    # AutoHealingScraper.__init__).  A mismatch means the scraper falls
+    # through to the default {"general"} in filter_scrapers_by_profile()
+    # and tech-only sources leak into non-tech profiles.
     SCRAPER_CATEGORIES = {
-        # JobSpy aggregator — covers Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter
-        # in one call. Marked "general" so non-tech profiles still benefit.
+        # JobSpy aggregator
         "JobSpy": {"general"},
         # Major general-purpose platforms
         "LinkedIn": {"general"},
@@ -2260,21 +2338,21 @@ class JobSearchAgent:
         # General remote boards
         "Remotive": {"general", "tech"},
         "Arbeitnow": {"general"},
-        "Working Nomads": {"general"},
-        "RemoteCo": {"general"},
+        "WorkingNomads": {"general"},
+        "Remote.co": {"general"},
         "Jobgether": {"general"},
         "Himalayas": {"general"},
-        "JobIcy": {"general"},
-        "Just Remote": {"general"},
+        "Jobicy": {"general"},
+        "JustRemote": {"general"},
         "Wellfound": {"general", "tech"},
         # Tech-specific (skip for non-tech profiles)
         "RemoteOK": {"tech"},
-        "We Work Remotely": {"tech"},
-        "Remote Rocketship": {"tech"},
+        "WeWorkRemotely": {"tech"},
+        "RemoteRocketship": {"tech"},
         "Arc.dev": {"tech"},
         "Toptal": {"tech"},
         "Contra": {"tech", "design"},
-        "GunIO": {"tech"},
+        "Gun.io": {"tech"},
         "Turing": {"tech"},
         "Truelancer": {"general", "tech"},
     }
@@ -2344,9 +2422,14 @@ class JobSearchAgent:
         if any(t in d for t in tech_terms):
             return scrapers
         # Non-tech profile — keep only scrapers tagged "general".
+        # Default to EMPTY set (not {"general"}) so an unregistered scraper
+        # is excluded rather than silently leaking tech results.
         kept = []
         for s in scrapers:
-            cats = cls.SCRAPER_CATEGORIES.get(s.name, {"general"})
+            cats = cls.SCRAPER_CATEGORIES.get(s.name, set())
+            if not cats:
+                print(f"  ⚠️  Scraper '{s.name}' not in SCRAPER_CATEGORIES — skipping for non-tech profile", flush=True)
+                continue
             if "general" in cats:
                 kept.append(s)
         return kept
@@ -2363,7 +2446,7 @@ class JobSearchAgent:
             for word in q.lower().split():
                 if len(word) > 2 and word not in ("the", "and", "for", "with", "from", "remote", "hybrid", "onsite"):
                     filter_keywords.add(word)
-        filter_keywords = list(filter_keywords)[:30] or ["engineer", "developer", "software"]
+        filter_keywords = list(filter_keywords)[:30] or ["remote", "job"]
 
         all_raw = []
         for scraper in self.scrapers:

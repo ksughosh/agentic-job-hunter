@@ -43,6 +43,11 @@ GEMMA_MODEL = os.environ.get("GEMMA_MODEL", "gemma4:latest")
 # Supports: local path for mlx-lm, or OpenAI-compatible server (LM Studio, vLLM, etc.)
 MLX_MODEL = os.environ.get("MLX_MODEL", "gemma-4-E4B-it-MLX-4bit")
 MLX_BASE_URL = os.environ.get("MLX_BASE_URL", "http://localhost:1234/v1")  # LM Studio default
+# Speculative decoding (MTP): set MLX_DRAFT_MODEL to a small companion model
+# (e.g. gemma-3-1b-it-4bit) that proposes tokens for the main model to verify.
+# ~2-3x throughput boost on Apple Silicon. Only used by native mlx-lm path.
+# LM Studio users: enable MTP in LM Studio Settings → Inference instead.
+MLX_DRAFT_MODEL = os.environ.get("MLX_DRAFT_MODEL", "")
 
 # LM Studio standalone (separate from MLX so users can pick either)
 LMSTUDIO_MODEL = os.environ.get("LMSTUDIO_MODEL", MLX_MODEL)
@@ -53,13 +58,32 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
-# Active provider
-_VALID_PROVIDERS = ("gemini", "gemma", "mlx", "lmstudio", "groq")
+# ─── Provider Registry ───────────────────────────────────────────────
+#
+# Single source of truth for every LLM provider. Each entry declares:
+#   kind      – "cloud" or "local"
+#   parallel  – max concurrent LLM requests (cloud uses 1 to respect rate limits)
+#   dispatch  – callable (prompt, max_tokens, temperature) → str  (bound lazily below)
+#   probe     – callable () → bool  (cheap reachability check, bound lazily below)
+#
+# To add a new provider: add ONE entry here. Everything else (is_cloud,
+# available_local_provider, _dispatch, parallelism, validation) derives
+# from this registry automatically — no hardcoded lists elsewhere.
+
+_PROVIDERS: dict[str, dict] = {
+    "mlx":      {"kind": "local",  "parallel": 6},   # Apple Silicon native, batches via mlx-lm
+    "lmstudio": {"kind": "local",  "parallel": 6},   # OpenAI-compat server, batches well
+    "gemma":    {"kind": "local",  "parallel": 6},   # Ollama server, batches well
+    "groq":     {"kind": "cloud",  "parallel": 1},   # rate-limited cloud
+    "gemini":   {"kind": "cloud",  "parallel": 1},   # rate-limited cloud (15 req/min)
+}
+
 _active_provider = os.environ.get("LLM_PROVIDER", "mlx")
 
 # MLX model cache (loaded once, reused across calls)
 _mlx_model = None
 _mlx_tokenizer = None
+_mlx_draft_model = None  # speculative decoding draft model
 
 # Groq rate-limit circuit breaker — set to a unix timestamp; all _call_groq
 # requests short-circuit until time.time() >= this value.
@@ -67,10 +91,9 @@ _GROQ_BLOCK_UNTIL = 0.0
 
 
 def set_provider(provider: str):
-    """Switch between 'gemini', 'gemma', and 'mlx'."""
     global _active_provider
-    if provider not in _VALID_PROVIDERS:
-        raise ValueError(f"Provider must be one of {_VALID_PROVIDERS}")
+    if provider not in _PROVIDERS:
+        raise ValueError(f"Provider must be one of {tuple(_PROVIDERS)}")
     _active_provider = provider
     print(f"[LLM] Switched to provider: {provider}")
 
@@ -79,54 +102,61 @@ def get_provider() -> str:
     return _active_provider
 
 
-# ─── Unified call_llm ─────────────────────────────────────────────────
-
-
-_CLOUD_PROVIDERS = ("gemini", "groq")
-_LOCAL_PROVIDERS = ("mlx", "lmstudio", "gemma")
-
-
-def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
-    if provider == "mlx":      return _call_mlx(prompt, max_tokens, temperature)
-    if provider == "lmstudio": return _call_lmstudio(prompt, max_tokens, temperature)
-    if provider == "gemma":    return _call_gemma(prompt, max_tokens, temperature)
-    if provider == "groq":     return _call_groq(prompt, max_tokens, temperature)
-    return _call_gemini(prompt, max_tokens, temperature)
+# ─── Registry-driven helpers ─────────────────────────────────────────
 
 
 def is_cloud(provider: str = "") -> bool:
-    return (provider or _active_provider) in _CLOUD_PROVIDERS
+    p = provider or _active_provider
+    entry = _PROVIDERS.get(p)
+    return entry["kind"] == "cloud" if entry else False
+
+
+def get_parallel(provider: str = "") -> int:
+    """Max concurrent LLM requests for a provider.
+
+    Checks env overrides first (LLM_NUM_PARALLEL, OLLAMA_NUM_PARALLEL),
+    then falls back to the registry default.
+    """
+    for var in ("LLM_NUM_PARALLEL", "OLLAMA_NUM_PARALLEL"):
+        env_val = os.environ.get(var, "")
+        if env_val.isdigit() and int(env_val) > 0:
+            return int(env_val)
+    p = provider or _active_provider
+    entry = _PROVIDERS.get(p)
+    return entry["parallel"] if entry else 1
+
+
+# Dispatch table — maps provider id → call function.
+# Populated after the _call_* functions are defined (bottom of file).
+_DISPATCH_TABLE: dict = {}
+
+
+def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
+    fn = _DISPATCH_TABLE.get(provider)
+    if fn:
+        return fn(prompt, max_tokens, temperature)
+    # Fallback for unknown provider — try gemini
+    return _DISPATCH_TABLE.get("gemini", lambda *a: "")(prompt, max_tokens, temperature)
 
 
 def available_local_provider() -> str:
     """Return the first reachable local provider id, or '' if none.
 
-    Probes cheap signals: LM Studio /models endpoint, Ollama tags, mlx_lm
-    package. Used by the scan cascade to decide whether a cloud failure can
-    fall through to local.
+    Iterates registry locals and runs their probe. No hardcoded list —
+    adding a new local provider to _PROVIDERS is sufficient.
     """
-    import requests as _req
-    # MLX (native) — pkg installed
-    try:
-        import mlx_lm  # noqa: F401
-        return "mlx"
-    except Exception:
-        pass
-    # LM Studio server
-    try:
-        if _req.get(f"{LMSTUDIO_BASE_URL}/models", timeout=2).status_code == 200:
-            return "lmstudio"
-    except Exception:
-        pass
-    # Ollama — only count it as reachable if at least one model is pulled,
-    # otherwise dispatch would just return an "unknown model" error.
-    try:
-        r = _req.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
-        if r.status_code == 200 and r.json().get("models"):
-            return "gemma"
-    except Exception:
-        pass
+    for pid, entry in _PROVIDERS.items():
+        if entry["kind"] != "local":
+            continue
+        probe = _PROBE_TABLE.get(pid)
+        if probe and probe():
+            return pid
     return ""
+
+
+# Probe table — maps provider id → reachability check.
+# Populated after probe functions are defined (bottom of file).
+_PROBE_TABLE: dict = {}
 
 
 def call_provider(provider: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
@@ -156,7 +186,7 @@ def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> s
     if primary:
         return primary
 
-    if _active_provider in _CLOUD_PROVIDERS:
+    if is_cloud(_active_provider):
         local = available_local_provider()
         if local and local != _active_provider:
             result = _dispatch(local, prompt, max_tokens, temperature)
@@ -215,20 +245,80 @@ def _call_groq(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) ->
     return ""
 
 
+# Cached resolved model id (auto-discovered from LM Studio /v1/models)
+_LMSTUDIO_RESOLVED_MODEL = ""
+
+
+def _lmstudio_resolve_model() -> str:
+    """Pick a usable model id from LM Studio's /v1/models endpoint.
+
+    Priority:
+      1. If LMSTUDIO_MODEL exactly matches a server model id → use it
+      2. First non-embedding model from /v1/models
+      3. Fall back to LMSTUDIO_MODEL as-is (will fail, but with a clearer error)
+    """
+    global _LMSTUDIO_RESOLVED_MODEL
+    if _LMSTUDIO_RESOLVED_MODEL:
+        return _LMSTUDIO_RESOLVED_MODEL
+    try:
+        r = requests.get(f"{LMSTUDIO_BASE_URL}/models", timeout=3)
+        if r.status_code != 200:
+            return LMSTUDIO_MODEL
+        ids = [m.get("id", "") for m in r.json().get("data", [])]
+        # Exact match wins
+        if LMSTUDIO_MODEL in ids:
+            _LMSTUDIO_RESOLVED_MODEL = LMSTUDIO_MODEL
+            return _LMSTUDIO_RESOLVED_MODEL
+        # Filter out embedding models — can't generate chat
+        chat_ids = [m for m in ids if "embed" not in m.lower()]
+        # Preference order: gemma > qwen > llama > phi > mistral > anything else.
+        # Skip 1-bit/2-bit models — too low quality for structured JSON output.
+        def _rank(mid: str) -> tuple:
+            ml = mid.lower()
+            low_quality = ("1bit" in ml or "1-bit" in ml or "2bit" in ml or "2-bit" in ml or "bonsai" in ml)
+            family_rank = 99
+            for i, fam in enumerate(("gemma", "qwen", "llama", "phi", "mistral")):
+                if fam in ml:
+                    family_rank = i
+                    break
+            return (1 if low_quality else 0, family_rank, mid)
+        chat_ids.sort(key=_rank)
+        if chat_ids:
+            mid = chat_ids[0]
+            _LMSTUDIO_RESOLVED_MODEL = mid
+            print(f"[LMStudio] LMSTUDIO_MODEL '{LMSTUDIO_MODEL}' not found; using '{mid}'", flush=True)
+            return _LMSTUDIO_RESOLVED_MODEL
+    except Exception:
+        pass
+    return LMSTUDIO_MODEL
+
+
 def _call_lmstudio(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
     """Call LM Studio's OpenAI-compatible server (separate from MLX path)."""
+    model_id = _lmstudio_resolve_model()
     try:
         resp = requests.post(
             f"{LMSTUDIO_BASE_URL}/chat/completions",
             json={
-                "model": LMSTUDIO_MODEL,
+                "model": model_id,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": temperature,
-                "reasoning_effort": "none",
+                # Disable model "thinking" — Gemma 4 / Qwen otherwise burn
+                # hundreds of reasoning tokens before the answer (~5x slower)
+                # and the actual response gets truncated.
+                # Note: reasoning_effort='none' counterintuitively re-enables
+                # thinking in LM Studio. Use chat_template_kwargs instead.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=120,
         )
+        if resp.status_code == 404:
+            # Model not loaded — clear cache so next call re-resolves
+            global _LMSTUDIO_RESOLVED_MODEL
+            _LMSTUDIO_RESOLVED_MODEL = ""
+            print(f"[LMStudio] Model '{model_id}' not loaded. Load it in LM Studio.", flush=True)
+            return ""
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
     except requests.exceptions.ConnectionError:
@@ -337,17 +427,27 @@ def _call_mlx(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> 
       2. Native mlx-lm (loads model into memory)
       3. Fallback to Ollama
     """
-    # Try OpenAI-compatible API first (LM Studio, mlx_lm.server, etc.)
-    result = _call_openai_compat(prompt, max_tokens, temperature)
-    if result:
-        return result
-
-    # Try native mlx-lm
+    # Try native mlx-lm first (faster, no server overhead)
     result = _call_mlx_native(prompt, max_tokens, temperature)
     if result:
         return result
 
-    # Fallback to Ollama
+    # Only fall back to OpenAI-compat API if mlx-lm is NOT installed.
+    # If mlx-lm IS installed the failure above is a model/generation issue —
+    # falling to LM Studio (same port) would be wrong and can hang for
+    # minutes if the desktop app is paused/sleeping.
+    try:
+        import mlx_lm  # noqa: F401
+        mlx_installed = True
+    except ImportError:
+        mlx_installed = False
+
+    if not mlx_installed:
+        result = _call_openai_compat(prompt, max_tokens, temperature)
+        if result:
+            return result
+
+    # Last resort: Ollama
     print("[MLX] No MLX backend available, falling back to Ollama", flush=True)
     return _call_gemma(prompt, max_tokens, temperature)
 
@@ -364,8 +464,9 @@ def _call_openai_compat(prompt: str, max_tokens: int, temperature: float) -> str
                 "temperature": temperature,
                 # Disable model "thinking" — Gemma in LM Studio otherwise burns
                 # hundreds of reasoning tokens before the answer (~5x slower).
-                # Unknown to servers that don't support it; they ignore it.
-                "reasoning_effort": "none",
+                # Note: reasoning_effort='none' counterintuitively re-enables
+                # thinking. Use chat_template_kwargs instead.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=120,
         )
@@ -379,19 +480,62 @@ def _call_openai_compat(prompt: str, max_tokens: int, temperature: float) -> str
         return ""
 
 
+def _resolve_model_path(name: str) -> str:
+    """Resolve a model name to a loadable path for mlx-lm.
+
+    Priority:
+      1. Already an absolute/relative path that exists → use as-is
+      2. HuggingFace repo id (contains '/') → let mlx-lm download
+      3. Check ~/.lmstudio/models/*/<name> → local LM Studio model dir
+      4. Return original name (mlx-lm will try HuggingFace)
+    """
+    from pathlib import Path
+
+    # Already a real path
+    p = Path(name).expanduser()
+    if p.exists():
+        return str(p)
+
+    # HuggingFace repo id (e.g. "mlx-community/gemma-3-12b-it-4bit")
+    if "/" in name:
+        return name
+
+    # Check LM Studio model dirs
+    lms_root = Path.home() / ".lmstudio" / "models"
+    if lms_root.exists():
+        for vendor_dir in lms_root.iterdir():
+            candidate = vendor_dir / name
+            if candidate.is_dir() and (candidate / "config.json").exists():
+                print(f"[MLX] Found local model: {candidate}", flush=True)
+                return str(candidate)
+
+    return name
+
+
 def _load_mlx_model():
-    """Load MLX model once, cache in memory."""
-    global _mlx_model, _mlx_tokenizer
+    """Load MLX model once, cache in memory. Optionally loads a draft model
+    for speculative decoding (MTP) if MLX_DRAFT_MODEL is set."""
+    global _mlx_model, _mlx_tokenizer, _mlx_draft_model
     if _mlx_model is not None:
         return _mlx_model, _mlx_tokenizer
 
     try:
         from mlx_lm import load
-        model_path = MLX_MODEL
-        # If it's a local path, use directly; otherwise HuggingFace ID
+        model_path = _resolve_model_path(MLX_MODEL)
         print(f"[MLX] Loading model: {model_path} (first call)...", flush=True)
         _mlx_model, _mlx_tokenizer = load(model_path)
         print(f"[MLX] Model loaded successfully.", flush=True)
+
+        # Load draft model for speculative decoding if configured
+        if MLX_DRAFT_MODEL:
+            try:
+                print(f"[MLX] Loading draft model for MTP: {MLX_DRAFT_MODEL}...", flush=True)
+                _mlx_draft_model, _ = load(MLX_DRAFT_MODEL)
+                print(f"[MLX] Draft model loaded — speculative decoding enabled.", flush=True)
+            except Exception as de:
+                print(f"[MLX] Draft model failed to load ({de}), running without MTP.", flush=True)
+                _mlx_draft_model = None
+
         return _mlx_model, _mlx_tokenizer
     except ImportError:
         print("[MLX] mlx-lm not installed. Run: pip install mlx-lm")
@@ -419,13 +563,17 @@ def _call_mlx_native(prompt: str, max_tokens: int = 4096, temperature: float = 0
         else:
             formatted = prompt
 
-        response = generate(
-            model, tokenizer,
+        gen_kwargs = dict(
             prompt=formatted,
             max_tokens=max_tokens,
             temp=temperature,
             verbose=False,
         )
+        # Speculative decoding: pass draft model if loaded (MTP ~2-3x speedup)
+        if _mlx_draft_model is not None:
+            gen_kwargs["draft_model"] = _mlx_draft_model
+
+        response = generate(model, tokenizer, **gen_kwargs)
         return response.strip() if response else ""
     except Exception as e:
         print(f"[MLX] Generation error: {e}", flush=True)
@@ -783,6 +931,47 @@ def _parse_json_response(text: str, default: dict) -> dict:
 
 
 # ─── Backward compatibility aliases ──────────────────────────────────
+# ─── Populate registry tables (after all _call_* functions are defined) ───
+
+_DISPATCH_TABLE.update({
+    "mlx":      _call_mlx,
+    "lmstudio": _call_lmstudio,
+    "gemma":    _call_gemma,
+    "groq":     _call_groq,
+    "gemini":   _call_gemini,
+})
+
+
+def _probe_mlx() -> bool:
+    try:
+        import mlx_lm  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _probe_lmstudio() -> bool:
+    try:
+        return requests.get(f"{LMSTUDIO_BASE_URL}/models", timeout=2).status_code == 200
+    except Exception:
+        return False
+
+
+def _probe_ollama() -> bool:
+    try:
+        r = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
+        return r.status_code == 200 and bool(r.json().get("models"))
+    except Exception:
+        return False
+
+
+_PROBE_TABLE.update({
+    "mlx":      _probe_mlx,
+    "lmstudio": _probe_lmstudio,
+    "gemma":    _probe_ollama,
+})
+
+
 # Other modules import from gemini_client — keep those names working.
 
 call_gemini = call_llm

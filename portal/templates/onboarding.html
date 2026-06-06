@@ -402,11 +402,12 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 6px;
+            flex-wrap: wrap;
+            gap: 4px 6px;
             font-size: 11px;
             color: var(--text2);
             padding: 8px 12px;
-            border-radius: 20px;
+            border-radius: 12px;
             background: var(--surface2);
             border: 1px solid var(--border);
             text-align: center;
@@ -462,6 +463,39 @@
         }
         .pipeline-step.active .dot { background: var(--accent2); }
         .pipeline-step.done .dot { background: var(--green); }
+        .step-detail {
+            display: none;
+            flex-basis: 100%;
+            font-size: 9px;
+            color: var(--text2);
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            opacity: 0.8;
+        }
+        .pipeline-step.active .step-detail { color: var(--accent2); }
+        .pipeline-step.done .step-detail { color: var(--green); opacity: 0.6; }
+        /* step-detail wraps to its own line via flex-basis:100% */
+        .verbose-btn {
+            position: absolute; right: 8px; top: 8px;
+            background: transparent; border: 1px solid var(--border);
+            color: var(--text2); border-radius: 4px; padding: 2px 8px;
+            font-size: 10px; cursor: pointer; opacity: 0.6;
+            transition: opacity 0.2s, border-color 0.2s;
+        }
+        .verbose-btn:hover { opacity: 1; }
+        .verbose-btn.active { border-color: var(--accent2); color: var(--accent2); opacity: 1; }
+        .scan-spinner {
+            display: inline-block;
+            width: 16px; height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent2);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse {
             0%, 100% { opacity: 1; transform: scale(1); }
             50%       { opacity: 0.4; transform: scale(0.7); }
@@ -776,7 +810,8 @@
         </form>
 
         <!-- Progress section (shown during search) -->
-        <div class="progress-section" id="progressSection">
+        <div class="progress-section" id="progressSection" style="position:relative;">
+            <button class="verbose-btn" id="verboseBtn" onclick="toggleVerbose()" title="Show step details">verbose</button>
             <div class="progress-bar-track">
                 <div class="progress-bar-fill" id="progressFill"></div>
             </div>
@@ -854,6 +889,7 @@
     function addRole(chip)      { OnboardingVM.addRole(chip); }
     function setProvider(btn)   { OnboardingVM.setProvider(btn); }
     function cancelPipeline()   { OnboardingVM.cancelPipeline(); }
+    function toggleVerbose()    { OnboardingVM.toggleVerbose(); }
     function saveApiKey()       { OnboardingVM.saveApiKey(); }
     function saveGroqKey()      { OnboardingVM.saveGroqKey(); }
     </script>
