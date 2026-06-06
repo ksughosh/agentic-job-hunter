@@ -106,16 +106,34 @@ const OnboardingVM = (() => {
 
         const deep = !!(document.getElementById('deepScan') || {}).checked;
 
-        // Show scanning state
-        $suggestions.innerHTML = '<span style="color:var(--text2); font-size:12px; padding:6px;">&#x1f50d; '
-            + (deep ? 'Deep scanning resume (~20s)...' : 'Scanning resume for role recommendations...')
-            + '</span>';
+        // Show scanning state with animated spinner
+        const scanLabel = deep
+            ? 'Deep scanning resume — analyzing skills, experience, and education (~20s)...'
+            : 'Scanning resume for role recommendations (~3s)...';
+        $suggestions.innerHTML = `
+            <div style="display:flex; align-items:center; gap:10px; padding:10px 6px; color:var(--text2); font-size:12px;">
+                <span class="scan-spinner"></span>
+                <span id="scanProgressText">${scanLabel}</span>
+            </div>`;
+        if ($scanStatus) { $scanStatus.style.display = 'none'; }
+
+        // Cycle progress text so user sees activity
+        const _phases = deep
+            ? ['Extracting text from PDF...', 'Parsing skills and experience...', 'Identifying domain and seniority...', 'Building role recommendations...', 'Generating search queries...']
+            : ['Reading resume...', 'Identifying key skills...', 'Building recommendations...'];
+        let _phaseIdx = 0;
+        const _phaseTimer = setInterval(() => {
+            _phaseIdx = (_phaseIdx + 1) % _phases.length;
+            const el = document.getElementById('scanProgressText');
+            if (el) el.textContent = _phases[_phaseIdx];
+        }, deep ? 4000 : 1200);
 
         try {
             const fd = new FormData();
             fd.append('resume', file);
             fd.append('mode', deep ? 'deep' : 'quick');
             const data = await Api.scanResume(fd);
+            clearInterval(_phaseTimer);
 
             if (!data.ok) {
                 $suggestions.innerHTML = _defaultChips();
@@ -156,6 +174,7 @@ const OnboardingVM = (() => {
                 $suggestions.innerHTML = _defaultChips();
             }
         } catch (err) {
+            clearInterval(_phaseTimer);
             console.error('Resume scan failed:', err);
             $suggestions.innerHTML = _defaultChips();
         }
