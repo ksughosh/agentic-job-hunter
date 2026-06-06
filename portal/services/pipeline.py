@@ -761,7 +761,8 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
     from portal.services.parallel import heuristic_top_n, jd_match_parallel
 
     # Determine if local model — use parallel + heuristic pre-filter
-    is_local = get_provider() in ("gemma", "ollama", "local", "mlx")
+    from agents.llm_client import is_cloud
+    is_local = not is_cloud(get_provider())
 
     # jobs from DB are dicts already
     job_dicts = jobs if all(isinstance(j, dict) for j in jobs) else [asdict(j) if not isinstance(j, dict) else j for j in jobs]
