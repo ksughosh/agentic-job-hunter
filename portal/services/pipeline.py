@@ -278,6 +278,11 @@ def run_agents(user_id: str, profile: dict, search_queries: list,
 
         run_id = db.create_pipeline_run(user_id, work_mode, search_queries, desired_role)
 
+        # Inject user-typed desired roles into the profile so downstream
+        # filters (domain relevance) can use them as allow-keywords.
+        if desired_role and "desired_roles" not in profile:
+            profile["desired_roles"] = [r.strip() for r in desired_role.split(",") if r.strip()]
+
         # ── Agent 1: Scrape ──
         raw_jobs, scraper = _run_scraper(user_id, profile, search_queries, work_mode)
         _check_cancel(user_id)
@@ -487,8 +492,18 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
     if profile_domain and not any(t in profile_domain.lower() for t in
             ("software", "engineering", "mobile", "backend", "frontend",
              "full-stack", "fullstack", "devops", "data", "ml", "ai", "tech")):
+        # Inject desired_roles so filter can use them as allow-keywords.
+        # search_queries may contain user-typed role strings; also pull
+        # from profile if already set.
+        profile_with_roles = dict(profile)
+        roles_acc = list(profile.get("desired_roles") or [])
+        for q in search_queries or []:
+            if isinstance(q, str) and q.strip():
+                roles_acc.append(q.strip())
+        if roles_acc:
+            profile_with_roles["desired_roles"] = roles_acc
         before_domain = len(filtered)
-        filtered = _filter_domain_relevance(filtered, profile)
+        filtered = _filter_domain_relevance(filtered, profile_with_roles)
         dropped = before_domain - len(filtered)
         if dropped:
             print(f"  🎯 Domain filter: dropped {dropped} off-domain jobs for '{profile_domain}' profile", flush=True)
@@ -547,86 +562,114 @@ def _filter_seniority(jobs: list, years_exp: int) -> list:
 def _filter_domain_relevance(jobs: list, profile: dict) -> list:
     """Drop jobs whose title clearly belongs to a different profession.
 
-    For a finance/audit candidate we drop "Software Engineer", "DevOps
-    Engineer", "Frontend Developer", etc.  For a marketing candidate we
-    drop engineering titles.  The filter is conservative — it only removes
-    jobs with unambiguous off-domain titles and keeps anything generic
-    (Manager, Analyst, Consultant, etc.) so the JD matcher can score it.
+    Uses TWO strategies:
+      1. Domain-specific allow-lists — for finance/marketing/HR/etc. profiles,
+         only keep titles containing recognized vocabulary from that domain.
+         Generic titles (Manager, Analyst, Consultant, Director) are also kept
+         so the JD matcher can score them on description content.
+      2. Tech deny-list — additionally drop unambiguous off-domain tech titles
+         that slip through the generic allow.
     """
     import re
 
     domain = (profile.get("domain") or "").lower()
     skills = {s.lower() for s in (profile.get("primary_skills") or [])}
     domain_kw = {s.lower() for s in (profile.get("domain_keywords") or [])}
-    candidate_words = skills | domain_kw | {domain}
+    desired_roles = {s.lower() for s in (profile.get("desired_roles") or [])}
+    candidate_words = skills | domain_kw | desired_roles | {domain}
 
-    # Titles that are clearly tech-engineering and irrelevant for non-tech
-    TECH_TITLE_PATTERNS = [
-        r"\bsoftware\s+engineer",
-        r"\bsoftware\s+developer",
-        r"\bsoftware\s+architect",
-        r"\bfrontend\s+(?:engineer|developer)",
-        r"\bfront[\s-]end\s+(?:engineer|developer)",
-        r"\bbackend\s+(?:engineer|developer)",
-        r"\bback[\s-]end\s+(?:engineer|developer)",
-        r"\bfull[\s-]?stack\s+(?:engineer|developer)",
-        r"\bdevops\s+engineer",
-        r"\bsite\s+reliability\s+engineer",
-        r"\bsre\b",
-        r"\bplatform\s+engineer",
-        r"\binfrastructure\s+engineer",
-        r"\bcloud\s+engineer",
-        r"\bdata\s+engineer",
-        r"\bmachine\s+learning\s+engineer",
-        r"\bml\s+engineer",
-        r"\bandroid\s+(?:engineer|developer)",
-        r"\bios\s+(?:engineer|developer)",
-        r"\bmobile\s+(?:engineer|developer)",
-        r"\bweb\s+developer",
-        r"\bruby\s+(?:developer|engineer)",
-        r"\bjava\s+(?:developer|engineer)",
-        r"\bpython\s+(?:developer|engineer)",
-        r"\bnode\.?js\s+(?:developer|engineer)",
-        r"\breact\s+(?:developer|engineer)",
-        r"\brust\s+(?:developer|engineer)",
-        r"\bgolang\s+(?:developer|engineer)",
-        r"\bquality\s+(?:assurance|engineer)\b.*(?:software|qa|test)",
-        r"\bsecurity\s+engineer",
-        r"\bnetwork\s+engineer",
-        r"\bsystems?\s+engineer",
-        r"\bembedded\s+(?:engineer|developer)",
+    # Domain → allow-list vocabulary. If the profile domain matches a key,
+    # only titles containing one of these terms (or a generic title word)
+    # survive.  Add new domains here as needed.
+    DOMAIN_ALLOWLISTS = {
+        "finance": {"accountant", "accounting", "audit", "auditor", "finance",
+                    "financial", "cfo", "controller", "treasury", "compliance",
+                    "tax", "fp&a", "fpa", "bookkeep", "cpa", "ca ", " ca,",
+                    "chartered", "actuary", "actuarial", "risk", "credit",
+                    "investment", "banking", "banker", "underwrit", "claims",
+                    "billing", "payroll", "ledger", "reconcil"},
+        "marketing": {"marketing", "brand", "growth", "seo", "content",
+                      "social media", "copywrit", "communications", "pr ",
+                      "public relations", "advertising", "campaign", "media buy"},
+        "hr": {"hr ", "human resources", "people ops", "talent", "recruit",
+               "compensation", "benefits", "employee", "training", "l&d",
+               "learning", "diversity", "workforce"},
+        "sales": {"sales", "account exec", "ae ", "business development",
+                  "bd ", "bdr", "sdr", "partnerships", "revenue", "go-to-market"},
+        "legal": {"legal", "counsel", "attorney", "lawyer", "compliance",
+                  "paralegal", "contracts"},
+        "operations": {"operations", "ops ", "supply chain", "logistics",
+                       "procurement", "vendor", "project manager", "pmo"},
+        "design": {"design", "ux", "ui ", "user experience", "user interface",
+                   "product designer", "graphic", "visual"},
+    }
+
+    # Pick the matching domain (substring match on profile domain)
+    allowed_terms: set[str] = set()
+    for d, terms in DOMAIN_ALLOWLISTS.items():
+        if d in domain:
+            allowed_terms = terms
+            break
+
+    # Generic title words — kept regardless of domain. JD matcher scores
+    # them on description content.
+    GENERIC_OK = {"manager", "director", "head of", "vp ", "vice president",
+                  "chief", "lead", "principal", "senior consultant",
+                  "associate", "specialist", "executive", "analyst",
+                  "consultant", "advisor", "coordinator", "administrator"}
+
+    # Tech titles to drop even if they pass the allow-list (rare but possible
+    # for terms like "data analyst" → "data scientist")
+    TECH_DENY_PATTERNS = [
+        r"\bsoftware\s+(?:engineer|developer|architect)",
+        r"\b(?:frontend|front[\s-]end|backend|back[\s-]end|full[\s-]?stack)\s+(?:engineer|developer)",
+        r"\bdevops\s+engineer", r"\bsite\s+reliability", r"\bsre\b",
+        r"\bplatform\s+engineer", r"\binfrastructure\s+engineer",
+        r"\bcloud\s+engineer", r"\bdata\s+engineer", r"\bdata\s+scientist",
+        r"\bmachine\s+learning\s+engineer", r"\bml\s+engineer",
+        r"\bai\s+engineer", r"\bai\s+(?:research|cinematic|video)",
+        r"\b(?:android|ios|mobile|web)\s+(?:engineer|developer)",
+        r"\b(?:ruby|java|python|node\.?js|react|rust|golang|c\+\+|kotlin|swift)\s+(?:developer|engineer)",
+        r"\bquality\s+(?:assurance\s+)?engineer", r"\bqa\s+engineer",
+        r"\bsecurity\s+engineer", r"\bnetwork\s+engineer",
+        r"\bsystems?\s+engineer", r"\bembedded\s+(?:engineer|developer)",
+        r"\bengineering\s+manager", r"\bproduct\s+engineer",
+        r"\bvideo\s+editor", r"\bcinematic", r"\bgame\s+(?:developer|engineer)",
+        r"\bsolutions?\s+architect", r"\btechnical\s+architect",
+        r"\bblockchain", r"\bcrypto", r"\bweb3",
     ]
-    compiled = [re.compile(p, re.IGNORECASE) for p in TECH_TITLE_PATTERNS]
+    deny_compiled = [re.compile(p, re.IGNORECASE) for p in TECH_DENY_PATTERNS]
 
-    # Some generic titles contain "engineer" but are domain-neutral
-    # (e.g. "Sales Engineer", "Solutions Engineer").  Don't drop those.
-    NEUTRAL_PREFIXES = {"sales", "solutions", "support", "customer", "field",
-                        "pre-sales", "presales", "quality"}
+    # Build candidate-token set for domain check (skip very short tokens
+    # like "ca" alone — too noisy).  Length>=4 chars unless it's an
+    # acronym in the explicit allowed_terms list.
+    candidate_check = {cw for cw in candidate_words if len(cw) >= 4}
 
     kept = []
     for job in jobs:
         title = (job.get("title", "") if isinstance(job, dict) else getattr(job, "title", "")).lower()
-
-        # Check if title matches a tech pattern
-        is_tech_title = any(p.search(title) for p in compiled)
-        if not is_tech_title:
+        if not title:
             kept.append(job)
             continue
 
-        # Before dropping, check if any candidate keyword appears in the title
-        # (e.g. a "Finance Data Engineer" might be relevant for a finance candidate)
-        if any(cw in title for cw in candidate_words if len(cw) > 2):
-            kept.append(job)
-            continue
+        # Hard-deny: unambiguous tech titles always dropped for non-tech profile
+        if any(p.search(title) for p in deny_compiled):
+            # Unless the profile's own skills/keywords appear in the title
+            # (e.g. a finance candidate searching for "Finance Data Analyst"
+            # where their resume contains "data analyst")
+            if not any(cw in title for cw in candidate_check):
+                continue
 
-        # Check for neutral prefixes
-        first_word = title.split()[0] if title.split() else ""
-        if first_word in NEUTRAL_PREFIXES:
-            kept.append(job)
-            continue
+        # If we have a domain allow-list, require at least ONE match from
+        # allowed terms OR generic title words OR candidate keywords.
+        if allowed_terms:
+            has_allowed = any(t in title for t in allowed_terms)
+            has_generic = any(g in title for g in GENERIC_OK)
+            has_candidate = any(cw in title for cw in candidate_check)
+            if not (has_allowed or has_generic or has_candidate):
+                continue
 
-        # Off-domain tech title — drop
-        continue
+        kept.append(job)
 
     return kept
 
@@ -849,6 +892,10 @@ def _save_analyses_to_db(user_id, reviewed_jobs, jd_agent, db_jobs):
             job_id = url_to_id.get(url)
             if not job_id:
                 continue
+            # Drop zero-match jobs — JD matcher found no overlap with profile,
+            # not worth surfacing on dashboard or storing.
+            if float(rd.get("match_score", 0) or 0) <= 0:
+                continue
             analyses.append({
                 "job_id": job_id,
                 "match_score": rd.get("match_score", 0),
@@ -927,6 +974,10 @@ def _save_local_results(user_id, profile, scraper, jd_agent=None, reviewed_jobs=
                 job_dicts.append(merged)
     except Exception as e:
         print(f"  ⚠️ Could not merge DB analyses: {e}", flush=True)
+
+    # Drop zero-match jobs from dashboard — JD matcher found no profile overlap.
+    if isinstance(job_dicts, list):
+        job_dicts = [j for j in job_dicts if float(j.get("match_score", 0) or 0) > 0]
 
     results = {
         "jobs": job_dicts if isinstance(job_dicts, list) else [],

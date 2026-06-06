@@ -1077,16 +1077,19 @@ class LinkedInScraper(AutoHealingScraper):
         if not any(kw.lower() in combined for kw in keywords):
             return None
 
+        # The guest API was queried with f_WT=2 (remote) so the listing IS
+        # remote — bake that into description + tags so downstream
+        # _filter_eligibility's REMOTE_SIGNALS check passes.
         return JobListing(
             title=title[:120],
             company=company[:80],
             location=location,
             salary="",
             job_type="full time",
-            description=f"{title} at {company}. Location: {location}",
+            description=f"Remote {title} at {company}. Location: {location}. Work from anywhere.",
             url=url,
             source="LinkedIn",
-            tags=[],
+            tags=["remote"],
             posted_date=posted,
             region="Global",
             source_quality=SOURCE_QUALITY.get("LinkedIn", 92),
@@ -2125,9 +2128,16 @@ class JobSpyScraper(AutoHealingScraper):
         if self.applicant_location:
             google_q += f" in {self.applicant_location}"
 
-        try:
-            self.stats["attempts"] += 1
-            df = _jobspy_scrape(
+        # Strategy: try LinkedIn description fetch (gives employer's direct
+        # apply URL in job_url_direct) with a wallclock budget. If it runs
+        # too long, abandon and re-scrape without the fetch — the
+        # _df_to_listings step will then synthesize a Google search URL for
+        # any LinkedIn job missing a direct apply link.
+        import concurrent.futures, time as _time
+        LINKEDIN_FETCH_BUDGET_S = 5.0  # extra time allowed for description fetch
+
+        def _do_scrape(fetch_linkedin: bool):
+            return _jobspy_scrape(
                 site_name=self.sites,
                 search_term=search_term,
                 google_search_term=google_q,
@@ -2135,8 +2145,30 @@ class JobSpyScraper(AutoHealingScraper):
                 results_wanted=self.results_wanted,
                 hours_old=self.hours_old,
                 country_indeed=self.country_indeed,
+                linkedin_fetch_description=fetch_linkedin,
                 verbose=0,
             )
+
+        df = None
+        try:
+            self.stats["attempts"] += 1
+            t0 = _time.time()
+            # Estimate baseline (non-fetch) time conservatively. The 5s
+            # LINKEDIN_FETCH_BUDGET_S is the EXTRA time we allow for the
+            # description fetch on top of the baseline scrape.
+            base_budget = max(8.0, min(15.0, self.results_wanted * 0.4))
+            total_budget = base_budget + LINKEDIN_FETCH_BUDGET_S
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_do_scrape, True)
+                try:
+                    df = fut.result(timeout=total_budget)
+                    elapsed = _time.time() - t0
+                    if elapsed > total_budget:
+                        print(f"  ⚠️  JobSpy linkedin_fetch took {elapsed:.1f}s (>{total_budget:.0f}s budget)", flush=True)
+                except concurrent.futures.TimeoutError:
+                    print(f"  ⚠️  JobSpy linkedin_fetch exceeded {total_budget:.0f}s — retrying without LinkedIn description fetch (will fall back to Google search URLs for LinkedIn jobs)", flush=True)
+                    # Abandon the slow future and retry without LinkedIn fetch
+                    df = _do_scrape(False)
             self.stats["successes"] += 1
         except Exception as e:
             self.stats["failures"] += 1
@@ -2193,7 +2225,44 @@ class JobSpyScraper(AutoHealingScraper):
                     jt_norm = "full-time"
 
                 desc = str(row.get("description") or "").strip()
-                url = str(row.get("job_url_direct") or row.get("job_url") or "").strip()
+                # LinkedIn fast-path returns empty descriptions. Synthesize
+                # one with title+company+location so _filter_eligibility's
+                # REMOTE_SIGNALS check still passes when is_remote=True.
+                _site_is_remote = bool(row.get("is_remote", False))
+                if not desc:
+                    _loc_hint = str(row.get("location") or "").strip()
+                    parts = [title or "", "at", company or ""]
+                    if _loc_hint:
+                        parts += [".", "Location:", _loc_hint]
+                    if _site_is_remote:
+                        parts += [".", "Remote position. Work from anywhere."]
+                    desc = " ".join(p for p in parts if p)
+
+                def _clean_url(v) -> str:
+                    """str() of pandas NaN is 'nan' (truthy) — guard against it."""
+                    import math as _m
+                    if v is None:
+                        return ""
+                    if isinstance(v, float) and _m.isnan(v):
+                        return ""
+                    s = str(v).strip()
+                    return "" if s.lower() in ("nan", "none", "null") else s
+
+                # Prefer the direct employer apply URL when JobSpy enriched
+                # the row with it (only available for LinkedIn when
+                # linkedin_fetch_description=True). Fall back to the board URL.
+                url = _clean_url(row.get("job_url_direct")) or _clean_url(row.get("job_url"))
+
+                # For LinkedIn results missing a direct apply URL (e.g. when
+                # the linkedin_fetch_description budget was exceeded), build
+                # a Google search URL so the user still has a working apply
+                # path instead of the LinkedIn landing page that often blocks
+                # non-logged-in users.
+                if site == "linkedin" and not _clean_url(row.get("job_url_direct")):
+                    from urllib.parse import quote_plus as _qp
+                    q = _qp(f'{title} {company} apply')
+                    url = f"https://www.google.com/search?q={q}"
+
                 if not url:
                     continue
 

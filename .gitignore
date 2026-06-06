@@ -58,3 +58,4 @@ node_modules/
 # Release artifacts
 *.zip
 release/
+bonsai_env/

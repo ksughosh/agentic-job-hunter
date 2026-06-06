@@ -99,10 +99,14 @@ const OnboardingVM = (() => {
         }
     }
 
+    let _scanInFlight = false;   // prevent concurrent scan requests
+
     async function _scanResume(file) {
         const $suggestions = document.querySelector('.suggestions');
         const $scanStatus = document.getElementById('scanStatus');
         if (!$suggestions) return;
+        if (_scanInFlight) return;  // scan already running — skip duplicate
+        _scanInFlight = true;
 
         const deep = !!(document.getElementById('deepScan') || {}).checked;
 
@@ -177,6 +181,8 @@ const OnboardingVM = (() => {
             clearInterval(_phaseTimer);
             console.error('Resume scan failed:', err);
             $suggestions.innerHTML = _defaultChips();
+        } finally {
+            _scanInFlight = false;
         }
     }
 

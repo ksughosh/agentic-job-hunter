@@ -16,63 +16,105 @@ def scan_resume():
     """Fast resume scan — returns role recommendations + profile + search queries.
     Called immediately after file upload. Result is cached per user so the pipeline
     can reuse it instead of re-parsing with LLM (saves ~5 min on local models).
+
+    Lazy user creation: user record is created ONLY after the PDF parses and
+    the LLM returns a real profile.  Until then the upload sits in a temp
+    staging path, so failed or in-flight scans never leave a placeholder
+    "Scanning…" entry in the sidebar.
     """
+    import tempfile
+
     resume_file = request.files.get("resume")
     if not resume_file:
         return jsonify({"ok": False, "message": "No file uploaded."})
 
-    # Lazily create the user record on first successful scan — not on
-    # "Create New Profile" click.  This prevents blank "New User" entries
-    # from cluttering the sidebar before a resume is parsed.
     uid = user_model.current_id()
-    if not uid:
-        uid = user_model.create("Scanning…")
-        user_model.set_current(uid)
-        _user_is_provisional = True
-    else:
-        _user_is_provisional = False
+    user_exists = bool(uid) and user_model.exists(uid)
+    if not user_exists:
+        uid = None  # session may carry stale id from a deleted user
 
     # "deep" = run the full scan synchronously (~20s) for a complete profile.
     # Default "quick" = fast chips (~3s) + full scan in the background.
     deep = request.form.get("mode", "quick").strip().lower() in ("full", "deep")
 
-    user_dir = data_svc.uploads_dir(uid)
-    resume_path = os.path.join(user_dir, "resume.pdf")
-    resume_file.save(resume_path)
+    # Stage upload in a temp file. Only promote to a real user dir on success.
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", prefix="resume_scan_")
+    os.close(tmp_fd)
+    resume_file.save(tmp_path)
+
+    def _promote_to_user(name: str) -> str:
+        """Create user, move staged PDF into their uploads dir, set session.
+        Returns the new uid.  Caller passes the parsed name from the LLM result."""
+        new_uid = user_model.create(name or "New User")
+        user_model.set_current(new_uid)
+        user_dir = data_svc.uploads_dir(new_uid)
+        final_path = os.path.join(user_dir, "resume.pdf")
+        try:
+            import shutil
+            shutil.move(tmp_path, final_path)
+        except Exception:
+            # Best-effort: if move fails, copy + unlink
+            try:
+                import shutil
+                shutil.copy(tmp_path, final_path)
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        return new_uid
+
+    def _cleanup_tmp():
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
 
     try:
         from agents.profile_parser import extract_text_from_pdf
         from agents.resume_scanner import fast_scan_resume
-        raw_text = extract_text_from_pdf(resume_path)
+        raw_text = extract_text_from_pdf(tmp_path)
         if not raw_text:
-            if _user_is_provisional:
-                user_model.delete(uid)
-                user_model.clear_current()
+            _cleanup_tmp()
             return jsonify({"ok": False, "message": "Could not read PDF."})
 
         if deep:
             # DEEP scan (sync) — full profile incl. experience + education.
             result = fast_scan_resume(raw_text, mode="full")
             if not result or not result.get("name"):
-                if _user_is_provisional:
-                    user_model.delete(uid)
-                    user_model.clear_current()
+                _cleanup_tmp()
                 return jsonify({"ok": False, "message": "LLM returned no profile. The active provider may be rate-limited (Groq free tier) or unreachable. Try switching to MLX/LM Studio/Ollama from the AI Engine toggle."})
-            # Scan succeeded — name the user from the resume.
-            user_model.update(uid, {"name": result.get("name", "New User")})
+            # Scan succeeded — promote staged resume to a real user.
+            if not uid:
+                uid = _promote_to_user(result.get("name", "New User"))
+            else:
+                # Existing user re-scanning: replace their resume.pdf
+                user_model.update(uid, {"name": result.get("name", "New User")})
+                final_path = os.path.join(data_svc.uploads_dir(uid), "resume.pdf")
+                try:
+                    import shutil
+                    shutil.move(tmp_path, final_path)
+                except Exception:
+                    _cleanup_tmp()
             data_svc.save_scan_result(result, uid)
             return jsonify({"ok": True, "mode": "deep", **result})
 
         # QUICK scan (sync) — minimal JSON, returns chips fast (~3s).
         result = fast_scan_resume(raw_text, mode="quick")
         if not result or not result.get("name"):
-            if _user_is_provisional:
-                user_model.delete(uid)
-                user_model.clear_current()
+            _cleanup_tmp()
             return jsonify({"ok": False, "message": "LLM returned no profile. The active provider may be rate-limited (Groq free tier) or unreachable. Try switching to MLX/LM Studio/Ollama from the AI Engine toggle."})
 
-        # Scan succeeded — name the user from the resume.
-        user_model.update(uid, {"name": result.get("name", "New User")})
+        # Scan succeeded — promote staged resume to a real user.
+        if not uid:
+            uid = _promote_to_user(result.get("name", "New User"))
+        else:
+            user_model.update(uid, {"name": result.get("name", "New User")})
+            final_path = os.path.join(data_svc.uploads_dir(uid), "resume.pdf")
+            try:
+                import shutil
+                shutil.move(tmp_path, final_path)
+            except Exception:
+                _cleanup_tmp()
 
         # Cache the quick result immediately so the pipeline can start even
         # before the full scan finishes.
@@ -94,6 +136,7 @@ def scan_resume():
 
         return jsonify({"ok": True, "mode": "quick", **result})
     except Exception as e:
+        _cleanup_tmp()
         import traceback; traceback.print_exc()
         return jsonify({"ok": False, "message": str(e)})
 

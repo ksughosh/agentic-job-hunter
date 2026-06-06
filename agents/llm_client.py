@@ -245,20 +245,80 @@ def _call_groq(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) ->
     return ""
 
 
+# Cached resolved model id (auto-discovered from LM Studio /v1/models)
+_LMSTUDIO_RESOLVED_MODEL = ""
+
+
+def _lmstudio_resolve_model() -> str:
+    """Pick a usable model id from LM Studio's /v1/models endpoint.
+
+    Priority:
+      1. If LMSTUDIO_MODEL exactly matches a server model id → use it
+      2. First non-embedding model from /v1/models
+      3. Fall back to LMSTUDIO_MODEL as-is (will fail, but with a clearer error)
+    """
+    global _LMSTUDIO_RESOLVED_MODEL
+    if _LMSTUDIO_RESOLVED_MODEL:
+        return _LMSTUDIO_RESOLVED_MODEL
+    try:
+        r = requests.get(f"{LMSTUDIO_BASE_URL}/models", timeout=3)
+        if r.status_code != 200:
+            return LMSTUDIO_MODEL
+        ids = [m.get("id", "") for m in r.json().get("data", [])]
+        # Exact match wins
+        if LMSTUDIO_MODEL in ids:
+            _LMSTUDIO_RESOLVED_MODEL = LMSTUDIO_MODEL
+            return _LMSTUDIO_RESOLVED_MODEL
+        # Filter out embedding models — can't generate chat
+        chat_ids = [m for m in ids if "embed" not in m.lower()]
+        # Preference order: gemma > qwen > llama > phi > mistral > anything else.
+        # Skip 1-bit/2-bit models — too low quality for structured JSON output.
+        def _rank(mid: str) -> tuple:
+            ml = mid.lower()
+            low_quality = ("1bit" in ml or "1-bit" in ml or "2bit" in ml or "2-bit" in ml or "bonsai" in ml)
+            family_rank = 99
+            for i, fam in enumerate(("gemma", "qwen", "llama", "phi", "mistral")):
+                if fam in ml:
+                    family_rank = i
+                    break
+            return (1 if low_quality else 0, family_rank, mid)
+        chat_ids.sort(key=_rank)
+        if chat_ids:
+            mid = chat_ids[0]
+            _LMSTUDIO_RESOLVED_MODEL = mid
+            print(f"[LMStudio] LMSTUDIO_MODEL '{LMSTUDIO_MODEL}' not found; using '{mid}'", flush=True)
+            return _LMSTUDIO_RESOLVED_MODEL
+    except Exception:
+        pass
+    return LMSTUDIO_MODEL
+
+
 def _call_lmstudio(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
     """Call LM Studio's OpenAI-compatible server (separate from MLX path)."""
+    model_id = _lmstudio_resolve_model()
     try:
         resp = requests.post(
             f"{LMSTUDIO_BASE_URL}/chat/completions",
             json={
-                "model": LMSTUDIO_MODEL,
+                "model": model_id,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": temperature,
-                "reasoning_effort": "none",
+                # Disable model "thinking" — Gemma 4 / Qwen otherwise burn
+                # hundreds of reasoning tokens before the answer (~5x slower)
+                # and the actual response gets truncated.
+                # Note: reasoning_effort='none' counterintuitively re-enables
+                # thinking in LM Studio. Use chat_template_kwargs instead.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=120,
         )
+        if resp.status_code == 404:
+            # Model not loaded — clear cache so next call re-resolves
+            global _LMSTUDIO_RESOLVED_MODEL
+            _LMSTUDIO_RESOLVED_MODEL = ""
+            print(f"[LMStudio] Model '{model_id}' not loaded. Load it in LM Studio.", flush=True)
+            return ""
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
     except requests.exceptions.ConnectionError:
@@ -367,17 +427,27 @@ def _call_mlx(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> 
       2. Native mlx-lm (loads model into memory)
       3. Fallback to Ollama
     """
-    # Try OpenAI-compatible API first (LM Studio, mlx_lm.server, etc.)
-    result = _call_openai_compat(prompt, max_tokens, temperature)
-    if result:
-        return result
-
-    # Try native mlx-lm
+    # Try native mlx-lm first (faster, no server overhead)
     result = _call_mlx_native(prompt, max_tokens, temperature)
     if result:
         return result
 
-    # Fallback to Ollama
+    # Only fall back to OpenAI-compat API if mlx-lm is NOT installed.
+    # If mlx-lm IS installed the failure above is a model/generation issue —
+    # falling to LM Studio (same port) would be wrong and can hang for
+    # minutes if the desktop app is paused/sleeping.
+    try:
+        import mlx_lm  # noqa: F401
+        mlx_installed = True
+    except ImportError:
+        mlx_installed = False
+
+    if not mlx_installed:
+        result = _call_openai_compat(prompt, max_tokens, temperature)
+        if result:
+            return result
+
+    # Last resort: Ollama
     print("[MLX] No MLX backend available, falling back to Ollama", flush=True)
     return _call_gemma(prompt, max_tokens, temperature)
 
@@ -394,8 +464,9 @@ def _call_openai_compat(prompt: str, max_tokens: int, temperature: float) -> str
                 "temperature": temperature,
                 # Disable model "thinking" — Gemma in LM Studio otherwise burns
                 # hundreds of reasoning tokens before the answer (~5x slower).
-                # Unknown to servers that don't support it; they ignore it.
-                "reasoning_effort": "none",
+                # Note: reasoning_effort='none' counterintuitively re-enables
+                # thinking. Use chat_template_kwargs instead.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=120,
         )
@@ -409,6 +480,38 @@ def _call_openai_compat(prompt: str, max_tokens: int, temperature: float) -> str
         return ""
 
 
+def _resolve_model_path(name: str) -> str:
+    """Resolve a model name to a loadable path for mlx-lm.
+
+    Priority:
+      1. Already an absolute/relative path that exists → use as-is
+      2. HuggingFace repo id (contains '/') → let mlx-lm download
+      3. Check ~/.lmstudio/models/*/<name> → local LM Studio model dir
+      4. Return original name (mlx-lm will try HuggingFace)
+    """
+    from pathlib import Path
+
+    # Already a real path
+    p = Path(name).expanduser()
+    if p.exists():
+        return str(p)
+
+    # HuggingFace repo id (e.g. "mlx-community/gemma-3-12b-it-4bit")
+    if "/" in name:
+        return name
+
+    # Check LM Studio model dirs
+    lms_root = Path.home() / ".lmstudio" / "models"
+    if lms_root.exists():
+        for vendor_dir in lms_root.iterdir():
+            candidate = vendor_dir / name
+            if candidate.is_dir() and (candidate / "config.json").exists():
+                print(f"[MLX] Found local model: {candidate}", flush=True)
+                return str(candidate)
+
+    return name
+
+
 def _load_mlx_model():
     """Load MLX model once, cache in memory. Optionally loads a draft model
     for speculative decoding (MTP) if MLX_DRAFT_MODEL is set."""
@@ -418,7 +521,7 @@ def _load_mlx_model():
 
     try:
         from mlx_lm import load
-        model_path = MLX_MODEL
+        model_path = _resolve_model_path(MLX_MODEL)
         print(f"[MLX] Loading model: {model_path} (first call)...", flush=True)
         _mlx_model, _mlx_tokenizer = load(model_path)
         print(f"[MLX] Model loaded successfully.", flush=True)
