@@ -43,6 +43,11 @@ GEMMA_MODEL = os.environ.get("GEMMA_MODEL", "gemma4:latest")
 # Supports: local path for mlx-lm, or OpenAI-compatible server (LM Studio, vLLM, etc.)
 MLX_MODEL = os.environ.get("MLX_MODEL", "gemma-4-E4B-it-MLX-4bit")
 MLX_BASE_URL = os.environ.get("MLX_BASE_URL", "http://localhost:1234/v1")  # LM Studio default
+# Speculative decoding (MTP): set MLX_DRAFT_MODEL to a small companion model
+# (e.g. gemma-3-1b-it-4bit) that proposes tokens for the main model to verify.
+# ~2-3x throughput boost on Apple Silicon. Only used by native mlx-lm path.
+# LM Studio users: enable MTP in LM Studio Settings → Inference instead.
+MLX_DRAFT_MODEL = os.environ.get("MLX_DRAFT_MODEL", "")
 
 # LM Studio standalone (separate from MLX so users can pick either)
 LMSTUDIO_MODEL = os.environ.get("LMSTUDIO_MODEL", MLX_MODEL)
@@ -78,6 +83,7 @@ _active_provider = os.environ.get("LLM_PROVIDER", "mlx")
 # MLX model cache (loaded once, reused across calls)
 _mlx_model = None
 _mlx_tokenizer = None
+_mlx_draft_model = None  # speculative decoding draft model
 
 # Groq rate-limit circuit breaker — set to a unix timestamp; all _call_groq
 # requests short-circuit until time.time() >= this value.
@@ -404,18 +410,29 @@ def _call_openai_compat(prompt: str, max_tokens: int, temperature: float) -> str
 
 
 def _load_mlx_model():
-    """Load MLX model once, cache in memory."""
-    global _mlx_model, _mlx_tokenizer
+    """Load MLX model once, cache in memory. Optionally loads a draft model
+    for speculative decoding (MTP) if MLX_DRAFT_MODEL is set."""
+    global _mlx_model, _mlx_tokenizer, _mlx_draft_model
     if _mlx_model is not None:
         return _mlx_model, _mlx_tokenizer
 
     try:
         from mlx_lm import load
         model_path = MLX_MODEL
-        # If it's a local path, use directly; otherwise HuggingFace ID
         print(f"[MLX] Loading model: {model_path} (first call)...", flush=True)
         _mlx_model, _mlx_tokenizer = load(model_path)
         print(f"[MLX] Model loaded successfully.", flush=True)
+
+        # Load draft model for speculative decoding if configured
+        if MLX_DRAFT_MODEL:
+            try:
+                print(f"[MLX] Loading draft model for MTP: {MLX_DRAFT_MODEL}...", flush=True)
+                _mlx_draft_model, _ = load(MLX_DRAFT_MODEL)
+                print(f"[MLX] Draft model loaded — speculative decoding enabled.", flush=True)
+            except Exception as de:
+                print(f"[MLX] Draft model failed to load ({de}), running without MTP.", flush=True)
+                _mlx_draft_model = None
+
         return _mlx_model, _mlx_tokenizer
     except ImportError:
         print("[MLX] mlx-lm not installed. Run: pip install mlx-lm")
@@ -443,13 +460,17 @@ def _call_mlx_native(prompt: str, max_tokens: int = 4096, temperature: float = 0
         else:
             formatted = prompt
 
-        response = generate(
-            model, tokenizer,
+        gen_kwargs = dict(
             prompt=formatted,
             max_tokens=max_tokens,
             temp=temperature,
             verbose=False,
         )
+        # Speculative decoding: pass draft model if loaded (MTP ~2-3x speedup)
+        if _mlx_draft_model is not None:
+            gen_kwargs["draft_model"] = _mlx_draft_model
+
+        response = generate(model, tokenizer, **gen_kwargs)
         return response.strip() if response else ""
     except Exception as e:
         print(f"[MLX] Generation error: {e}", flush=True)
