@@ -64,7 +64,7 @@ const UserPanel = (() => {
                 <div class="user-meta">Created ${new Date(u.created_at).toLocaleDateString()}</div>
                 ${roles}
                 <div>${badges}</div>
-                <button class="user-delete" onclick="event.stopPropagation(); UserPanel.deleteUser('${u.id}', '${u.name}')" title="Delete profile">&times;</button>
+                <button class="user-delete" onclick="event.stopPropagation(); UserPanel.deleteUser('${u.id}', '${u.name}', ${u.has_results || u.pipeline_running})" title="Delete profile">&times;</button>
             `;
             $list.appendChild(card);
         });
@@ -82,8 +82,10 @@ const UserPanel = (() => {
         window.location.href = '/start?new=1';
     }
 
-    async function deleteUser(userId, name) {
-        // No confirmation prompt — the data folder is kept on disk for safety.
+    async function deleteUser(userId, name, hasData) {
+        // Prompt only if profile has results or pipeline is running.
+        // Failed/incomplete profiles clear silently.
+        if (hasData && !confirm(`Delete profile "${name}"?`)) return;
         const data = await Api.deleteUser(userId);
         if (data.ok) window.location.href = data.redirect;
     }
