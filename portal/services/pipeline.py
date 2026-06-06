@@ -472,6 +472,19 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
         if dropped:
             print(f"  🎯 Seniority filter: dropped {dropped} junior/mid roles ({years_exp}+ yrs experience)", flush=True)
 
+    # Domain relevance filter: for non-tech profiles, drop jobs whose title
+    # clearly belongs to a different profession (e.g. "Software Engineer" for
+    # a CA/finance candidate).  Tech profiles skip this — their scrapers
+    # already return relevant results.
+    if profile_domain and not any(t in profile_domain.lower() for t in
+            ("software", "engineering", "mobile", "backend", "frontend",
+             "full-stack", "fullstack", "devops", "data", "ml", "ai", "tech")):
+        before_domain = len(filtered)
+        filtered = _filter_domain_relevance(filtered, profile)
+        dropped = before_domain - len(filtered)
+        if dropped:
+            print(f"  🎯 Domain filter: dropped {dropped} off-domain jobs for '{profile_domain}' profile", flush=True)
+
     scraper.stats["total_unique"] = len(filtered)
     scraper.stats["total_before_filter"] = len(unique)
     scraper.all_jobs = filtered
@@ -519,6 +532,93 @@ def _filter_seniority(jobs: list, years_exp: int) -> list:
             continue
 
         kept.append(job)
+
+    return kept
+
+
+def _filter_domain_relevance(jobs: list, profile: dict) -> list:
+    """Drop jobs whose title clearly belongs to a different profession.
+
+    For a finance/audit candidate we drop "Software Engineer", "DevOps
+    Engineer", "Frontend Developer", etc.  For a marketing candidate we
+    drop engineering titles.  The filter is conservative — it only removes
+    jobs with unambiguous off-domain titles and keeps anything generic
+    (Manager, Analyst, Consultant, etc.) so the JD matcher can score it.
+    """
+    import re
+
+    domain = (profile.get("domain") or "").lower()
+    skills = {s.lower() for s in (profile.get("primary_skills") or [])}
+    domain_kw = {s.lower() for s in (profile.get("domain_keywords") or [])}
+    candidate_words = skills | domain_kw | {domain}
+
+    # Titles that are clearly tech-engineering and irrelevant for non-tech
+    TECH_TITLE_PATTERNS = [
+        r"\bsoftware\s+engineer",
+        r"\bsoftware\s+developer",
+        r"\bsoftware\s+architect",
+        r"\bfrontend\s+(?:engineer|developer)",
+        r"\bfront[\s-]end\s+(?:engineer|developer)",
+        r"\bbackend\s+(?:engineer|developer)",
+        r"\bback[\s-]end\s+(?:engineer|developer)",
+        r"\bfull[\s-]?stack\s+(?:engineer|developer)",
+        r"\bdevops\s+engineer",
+        r"\bsite\s+reliability\s+engineer",
+        r"\bsre\b",
+        r"\bplatform\s+engineer",
+        r"\binfrastructure\s+engineer",
+        r"\bcloud\s+engineer",
+        r"\bdata\s+engineer",
+        r"\bmachine\s+learning\s+engineer",
+        r"\bml\s+engineer",
+        r"\bandroid\s+(?:engineer|developer)",
+        r"\bios\s+(?:engineer|developer)",
+        r"\bmobile\s+(?:engineer|developer)",
+        r"\bweb\s+developer",
+        r"\bruby\s+(?:developer|engineer)",
+        r"\bjava\s+(?:developer|engineer)",
+        r"\bpython\s+(?:developer|engineer)",
+        r"\bnode\.?js\s+(?:developer|engineer)",
+        r"\breact\s+(?:developer|engineer)",
+        r"\brust\s+(?:developer|engineer)",
+        r"\bgolang\s+(?:developer|engineer)",
+        r"\bquality\s+(?:assurance|engineer)\b.*(?:software|qa|test)",
+        r"\bsecurity\s+engineer",
+        r"\bnetwork\s+engineer",
+        r"\bsystems?\s+engineer",
+        r"\bembedded\s+(?:engineer|developer)",
+    ]
+    compiled = [re.compile(p, re.IGNORECASE) for p in TECH_TITLE_PATTERNS]
+
+    # Some generic titles contain "engineer" but are domain-neutral
+    # (e.g. "Sales Engineer", "Solutions Engineer").  Don't drop those.
+    NEUTRAL_PREFIXES = {"sales", "solutions", "support", "customer", "field",
+                        "pre-sales", "presales", "quality"}
+
+    kept = []
+    for job in jobs:
+        title = (job.get("title", "") if isinstance(job, dict) else getattr(job, "title", "")).lower()
+
+        # Check if title matches a tech pattern
+        is_tech_title = any(p.search(title) for p in compiled)
+        if not is_tech_title:
+            kept.append(job)
+            continue
+
+        # Before dropping, check if any candidate keyword appears in the title
+        # (e.g. a "Finance Data Engineer" might be relevant for a finance candidate)
+        if any(cw in title for cw in candidate_words if len(cw) > 2):
+            kept.append(job)
+            continue
+
+        # Check for neutral prefixes
+        first_word = title.split()[0] if title.split() else ""
+        if first_word in NEUTRAL_PREFIXES:
+            kept.append(job)
+            continue
+
+        # Off-domain tech title — drop
+        continue
 
     return kept
 

@@ -2244,9 +2244,12 @@ class JobSearchAgent:
     # roles. Pipeline uses these to skip tech-only sources for non-tech
     # candidates (a Chartered Accountant should not be searched on Arc.dev
     # or GunIO — those return only engineering jobs).
+    # Keys MUST match the scraper's self.name (the string passed to
+    # AutoHealingScraper.__init__).  A mismatch means the scraper falls
+    # through to the default {"general"} in filter_scrapers_by_profile()
+    # and tech-only sources leak into non-tech profiles.
     SCRAPER_CATEGORIES = {
-        # JobSpy aggregator — covers Indeed/LinkedIn/Glassdoor/Google/ZipRecruiter
-        # in one call. Marked "general" so non-tech profiles still benefit.
+        # JobSpy aggregator
         "JobSpy": {"general"},
         # Major general-purpose platforms
         "LinkedIn": {"general"},
@@ -2260,21 +2263,21 @@ class JobSearchAgent:
         # General remote boards
         "Remotive": {"general", "tech"},
         "Arbeitnow": {"general"},
-        "Working Nomads": {"general"},
-        "RemoteCo": {"general"},
+        "WorkingNomads": {"general"},
+        "Remote.co": {"general"},
         "Jobgether": {"general"},
         "Himalayas": {"general"},
-        "JobIcy": {"general"},
-        "Just Remote": {"general"},
+        "Jobicy": {"general"},
+        "JustRemote": {"general"},
         "Wellfound": {"general", "tech"},
         # Tech-specific (skip for non-tech profiles)
         "RemoteOK": {"tech"},
-        "We Work Remotely": {"tech"},
-        "Remote Rocketship": {"tech"},
+        "WeWorkRemotely": {"tech"},
+        "RemoteRocketship": {"tech"},
         "Arc.dev": {"tech"},
         "Toptal": {"tech"},
         "Contra": {"tech", "design"},
-        "GunIO": {"tech"},
+        "Gun.io": {"tech"},
         "Turing": {"tech"},
         "Truelancer": {"general", "tech"},
     }
@@ -2344,9 +2347,14 @@ class JobSearchAgent:
         if any(t in d for t in tech_terms):
             return scrapers
         # Non-tech profile — keep only scrapers tagged "general".
+        # Default to EMPTY set (not {"general"}) so an unregistered scraper
+        # is excluded rather than silently leaking tech results.
         kept = []
         for s in scrapers:
-            cats = cls.SCRAPER_CATEGORIES.get(s.name, {"general"})
+            cats = cls.SCRAPER_CATEGORIES.get(s.name, set())
+            if not cats:
+                print(f"  ⚠️  Scraper '{s.name}' not in SCRAPER_CATEGORIES — skipping for non-tech profile", flush=True)
+                continue
             if "general" in cats:
                 kept.append(s)
         return kept
@@ -2363,7 +2371,7 @@ class JobSearchAgent:
             for word in q.lower().split():
                 if len(word) > 2 and word not in ("the", "and", "for", "with", "from", "remote", "hybrid", "onsite"):
                     filter_keywords.add(word)
-        filter_keywords = list(filter_keywords)[:30] or ["engineer", "developer", "software"]
+        filter_keywords = list(filter_keywords)[:30] or ["remote", "job"]
 
         all_raw = []
         for scraper in self.scrapers:

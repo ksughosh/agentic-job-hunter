@@ -76,12 +76,14 @@ const UserPanel = (() => {
     }
 
     async function addNewUser() {
-        const data = await Api.createUser('New User');
-        if (data.ok) window.location.href = data.redirect;
+        // Don't create a "New User" entry yet — just navigate to onboarding.
+        // The user record is created lazily when the resume scan succeeds,
+        // so the sidebar never shows a blank "New User" placeholder.
+        window.location.href = '/start?new=1';
     }
 
     async function deleteUser(userId, name) {
-        if (!confirm(`Delete profile "${name}"? This removes it from the list but keeps the data folder.`)) return;
+        // No confirmation prompt — the data folder is kept on disk for safety.
         const data = await Api.deleteUser(userId);
         if (data.ok) window.location.href = data.redirect;
     }

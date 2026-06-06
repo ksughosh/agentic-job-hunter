@@ -56,9 +56,19 @@ def index():
 
 @bp.route("/start")
 def start():
-    """Force-show the onboarding page (new search)."""
-    uid = user_model.current_id()
-    status = pipeline.get_status(uid) if uid else {}
+    """Force-show the onboarding page (new search).
+
+    ?new=1 clears the current user so the scan-resume route creates a
+    fresh profile lazily on first successful parse.
+    """
+    from flask import request
+    if request.args.get("new"):
+        user_model.clear_current()
+        uid = None
+        status = {}
+    else:
+        uid = user_model.current_id()
+        status = pipeline.get_status(uid) if uid else {}
     return render_template("onboarding.html",
                            **_onboarding_ctx(uid, status.get("running", False), status))
 

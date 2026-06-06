@@ -75,11 +75,16 @@ const OnboardingVM = (() => {
         $fileInput.addEventListener('change', _onFileSelect);
 
         // Re-scan with the new depth when the deep-scan toggle changes.
+        // Clear previously-selected roles so stale simple-scan picks don't
+        // bleed into the deep-scan result.
         const $deep = document.getElementById('deepScan');
         if ($deep) {
             $deep.addEventListener('change', () => {
                 const f = $fileInput.files[0];
-                if (f) _scanResume(f);
+                if (f) {
+                    $roleInput.value = '';
+                    _scanResume(f);
+                }
             });
         }
     }
@@ -317,6 +322,11 @@ const OnboardingVM = (() => {
         } catch {
             if (status) { status.textContent = 'Cannot reach server'; status.style.color = 'var(--red)'; }
         }
+        // Re-scan with the new provider if a resume is already uploaded.
+        // Clears stale error banners from a previous provider failure.
+        if ($fileInput && $fileInput.files.length) {
+            _scanResume($fileInput.files[0]);
+        }
     }
 
     // ── Form Submit ──
@@ -354,10 +364,15 @@ const OnboardingVM = (() => {
 
     // ── Progress / Pipeline ──
 
+    let _verbose = false;
+
     function _showProgress() {
         $form.style.display = 'none';
         $progressSection.classList.add('active');
         $cancelBtn.style.display = 'inline-block';
+        // Remove any leftover retry button
+        const old = document.getElementById('retryBtn');
+        if (old) old.remove();
     }
 
     function _hideProgress() {
@@ -371,7 +386,7 @@ const OnboardingVM = (() => {
                 const data = await Api.searchStatus();
                 $progressFill.style.width = data.progress + '%';
                 $progressStatus.innerHTML = data.message;
-                _updateSteps(data.progress);
+                _updateSteps(data.progress, data.message);
                 _updateSourceTicker(data);
 
                 if (!data.running && data.progress >= 100) {
@@ -383,19 +398,40 @@ const OnboardingVM = (() => {
                     clearInterval(_pollInterval);
                     _hideProgress();
                     $progressStatus.innerHTML = '<span style="color:var(--red);">' + data.message + '</span>';
-                    setTimeout(() => {
-                        $form.style.display = 'block';
-                        $progressSection.classList.remove('active');
-                    }, 3000);
+                    _showRetryButton();
                 }
             } catch { /* retry next tick */ }
         }, 1500);
     }
 
+    function _showRetryButton() {
+        if (document.getElementById('retryBtn')) return;
+        const btn = document.createElement('button');
+        btn.id = 'retryBtn';
+        btn.textContent = '↻ Retry Pipeline';
+        btn.style.cssText = 'margin-top:14px; padding:8px 20px; border-radius:8px; border:1px solid var(--accent2); background:transparent; color:var(--accent2); cursor:pointer; font-size:13px; font-weight:600;';
+        btn.onclick = () => {
+            btn.remove();
+            // Re-submit the form to restart the pipeline
+            $form.style.display = 'block';
+            $progressSection.classList.remove('active');
+            _resetSteps();
+        };
+        $progressStatus.parentElement.appendChild(btn);
+    }
+
     async function cancelPipeline() {
         $cancelBtn.disabled = true;
         $cancelBtn.style.opacity = '0.4';
-        try { await Api.cancelPipeline(); } catch { /* polling catches it */ }
+        try {
+            const r = await Api.cancelPipeline();
+            // If user was removed (no results yet), redirect to fresh start
+            if (r && r.removed) {
+                clearInterval(_pollInterval);
+                window.location.href = '/start?new=1';
+                return;
+            }
+        } catch { /* polling catches it */ }
     }
 
     // ── Pipeline Step Connectors ──
@@ -448,19 +484,39 @@ const OnboardingVM = (() => {
 
     function _resetSteps() {
         STAGES.forEach(s => {
-            document.getElementById('pipe-' + s.id).classList.remove('done', 'active');
+            const el = document.getElementById('pipe-' + s.id);
+            el.classList.remove('done', 'active');
+            const det = el.querySelector('.step-detail');
+            if (det) det.textContent = '';
         });
         [1, 2, 3, 4].forEach(i => {
             document.getElementById('conn-' + i).classList.remove('done', 'active');
         });
     }
 
-    function _updateSteps(progress) {
+    function _updateSteps(progress, statusMsg) {
         STAGES.forEach((s, i) => {
             const el = document.getElementById('pipe-' + s.id);
             if (progress >= s.done)       { el.classList.add('done'); el.classList.remove('active'); }
             else if (progress >= s.active) { el.classList.add('active'); el.classList.remove('done'); }
             else                           { el.classList.remove('done', 'active'); }
+
+            // Verbose detail: show server message under the currently active step
+            let det = el.querySelector('.step-detail');
+            if (!det) {
+                det = document.createElement('div');
+                det.className = 'step-detail';
+                el.appendChild(det);
+            }
+            if (el.classList.contains('active') && _verbose && statusMsg) {
+                det.textContent = statusMsg;
+                det.style.display = 'block';
+            } else if (el.classList.contains('done') && _verbose) {
+                det.textContent = '✓ done';
+                det.style.display = 'block';
+            } else {
+                det.style.display = 'none';
+            }
         });
         for (let i = 1; i <= 4; i++) {
             const conn = document.getElementById('conn-' + i);
@@ -474,6 +530,18 @@ const OnboardingVM = (() => {
                 conn.classList.remove('done', 'active');
             }
         }
+    }
+
+    function toggleVerbose() {
+        _verbose = !_verbose;
+        const btn = document.getElementById('verboseBtn');
+        if (btn) {
+            btn.classList.toggle('active', _verbose);
+            btn.title = _verbose ? 'Hide step details' : 'Show step details';
+        }
+        // Immediately refresh step details
+        const data = { progress: parseFloat($progressFill.style.width) || 0, message: $progressStatus.textContent };
+        _updateSteps(data.progress, data.message);
     }
 
     // ── API Key ──
@@ -497,7 +565,7 @@ const OnboardingVM = (() => {
         if (data.ok) _renderProviders();
     }
 
-    return { init, addRole, setProvider, cancelPipeline, saveApiKey, saveGroqKey };
+    return { init, addRole, setProvider, cancelPipeline, toggleVerbose, saveApiKey, saveGroqKey };
 })();
 
 if (typeof document !== 'undefined' && document.addEventListener) {
