@@ -2144,9 +2144,12 @@ class JobSpyScraper(AutoHealingScraper):
             return []
 
         if df is None or len(df) == 0:
+            print(f"  [{self.name}] No results returned", flush=True)
             return []
 
-        return self._df_to_listings(df)
+        listings = self._df_to_listings(df)
+        print(f"  [{self.name}] Found {len(listings)} jobs from {len(df)} raw rows ({', '.join(self.sites)})", flush=True)
+        return listings
 
     def _df_to_listings(self, df):
         """Convert a JobSpy DataFrame into our JobListing dataclass."""
@@ -2194,8 +2197,11 @@ class JobSpyScraper(AutoHealingScraper):
                 if not url:
                     continue
 
-                sal_min = float(row.get("min_amount") or 0) or 0
-                sal_max = float(row.get("max_amount") or 0) or 0
+                import math
+                _raw_min = row.get("min_amount")
+                _raw_max = row.get("max_amount")
+                sal_min = 0.0 if (_raw_min is None or (isinstance(_raw_min, float) and math.isnan(_raw_min))) else float(_raw_min)
+                sal_max = 0.0 if (_raw_max is None or (isinstance(_raw_max, float) and math.isnan(_raw_max))) else float(_raw_max)
                 currency = str(row.get("currency") or "USD").upper()[:3]
                 is_remote = bool(row.get("is_remote", False))
                 date_posted = str(row.get("date_posted") or "").strip()
