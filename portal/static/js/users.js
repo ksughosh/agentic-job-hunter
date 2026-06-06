@@ -76,9 +76,15 @@ const UserPanel = (() => {
     }
 
     async function addNewUser() {
-        // Don't create a "New User" entry yet — just navigate to onboarding.
-        // The user record is created lazily when the resume scan succeeds,
-        // so the sidebar never shows a blank "New User" placeholder.
+        // Check if current user has a running pipeline — don't orphan it
+        try {
+            const status = await Api.searchStatus();
+            if (status && status.running) {
+                alert('A pipeline is currently running. Cancel it first before creating a new profile.');
+                return;
+            }
+        } catch {}
+        // Navigate to onboarding. User record created lazily on scan success.
         window.location.href = '/start?new=1';
     }
 
