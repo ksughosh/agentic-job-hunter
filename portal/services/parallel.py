@@ -94,6 +94,7 @@ def scrape_parallel(
                         result.ok,
                         completed_count,
                         total,
+                        error=result.error,
                     )
 
     return results, errors

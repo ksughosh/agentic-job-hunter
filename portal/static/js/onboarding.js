@@ -480,18 +480,26 @@ const OnboardingVM = (() => {
         const active = data.current_source || '';
 
         // Build chip set: completed + active
-        $sourceChips.innerHTML = done.map(s => `
-            <span style="
+        const okBg   = 'rgba(0,206,201,0.12)',  okC   = 'var(--green)', okB   = 'rgba(0,206,201,0.3)';
+        const failBg = 'rgba(225,112,85,0.12)', failC = 'var(--red)',   failB = 'rgba(225,112,85,0.3)';
+
+        $sourceChips.innerHTML = done.map(s => {
+            const bg = s.ok ? okBg : failBg;
+            const c  = s.ok ? okC  : failC;
+            const b  = s.ok ? okB  : failB;
+            const icon = s.ok ? '✓' : '✗';
+            const countLabel = s.count ? ` <span style="opacity:0.6">(${s.count})</span>` : '';
+            // Verbose: show error reason inline; always show on hover
+            const errText = s.error ? ` — ${s.error}` : '';
+            const tooltip = s.error || (s.ok ? `${s.count} jobs` : 'no results');
+            const detail = _verbose && s.error ? `<span style="font-size:9px;opacity:0.7;">${errText}</span>` : '';
+            return `<span title="${tooltip}" style="
                 display:inline-flex; align-items:center; gap:4px;
                 padding:3px 9px; border-radius:20px; font-size:11px; font-weight:500;
-                background:${s.ok ? 'rgba(0,206,201,0.12)' : 'rgba(225,112,85,0.12)'};
-                color:${s.ok ? 'var(--green)' : 'var(--red)'};
-                border:1px solid ${s.ok ? 'rgba(0,206,201,0.3)' : 'rgba(225,112,85,0.3)'};
-                white-space:nowrap;
-            ">
-                ${s.ok ? '✓' : '✗'} ${s.name}${s.count ? ' <span style="opacity:0.6">('+s.count+')</span>' : ''}
-            </span>`
-        ).join('') + (active ? `
+                background:${bg}; color:${c}; border:1px solid ${b};
+                white-space:nowrap; cursor:default;
+            ">${icon} ${s.name}${countLabel}${detail}</span>`;
+        }).join('') + (active ? `
             <span style="
                 display:inline-flex; align-items:center; gap:5px;
                 padding:3px 9px; border-radius:20px; font-size:11px; font-weight:600;
@@ -523,18 +531,20 @@ const OnboardingVM = (() => {
             else if (progress >= s.active) { el.classList.add('active'); el.classList.remove('done'); }
             else                           { el.classList.remove('done', 'active'); }
 
-            // Verbose detail: show server message under the currently active step
+            // Verbose detail: show debug info under each step (not the status text)
             let det = el.querySelector('.step-detail');
             if (!det) {
                 det = document.createElement('div');
                 det.className = 'step-detail';
                 el.appendChild(det);
             }
-            if (el.classList.contains('active') && _verbose && statusMsg) {
-                det.textContent = statusMsg;
+            if (!_verbose) {
+                det.style.display = 'none';
+            } else if (el.classList.contains('active')) {
+                det.textContent = _stepDebugInfo(s.id, progress, statusMsg);
                 det.style.display = 'block';
-            } else if (el.classList.contains('done') && _verbose) {
-                det.textContent = '✓ done';
+            } else if (el.classList.contains('done')) {
+                det.textContent = '✓ complete';
                 det.style.display = 'block';
             } else {
                 det.style.display = 'none';
@@ -551,6 +561,36 @@ const OnboardingVM = (() => {
             } else {
                 conn.classList.remove('done', 'active');
             }
+        }
+    }
+
+    function _stepDebugInfo(stepId, progress, msg) {
+        // Extract meaningful debug detail from server status message per step
+        switch (stepId) {
+            case 'parse':
+                if (progress < 10) return 'reading PDF...';
+                if (progress < 15) return 'extracting profile fields';
+                return 'profile extracted';
+            case 'refine':
+                if (/refin/i.test(msg)) return 'LLM refining queries';
+                if (/reuse/i.test(msg)) return 'using cached scan';
+                return 'building search params';
+            case 'scrape': {
+                const m = msg.match(/(\d+)\/(\d+)\s*sources/);
+                if (m) return `${m[1]}/${m[2]} sources polled`;
+                return 'dispatching scrapers';
+            }
+            case 'company':
+                if (/(\d+)\s*companies/i.test(msg)) return msg.match(/(\d+)\s*companies/i)[0];
+                return 'reviewing companies';
+            case 'match': {
+                const jm = msg.match(/(\d+)\/(\d+)\s*jobs?\s*scored/i);
+                if (jm) return `LLM scoring ${jm[1]}/${jm[2]}`;
+                if (/heuristic/i.test(msg)) return 'heuristic pre-filter';
+                if (/saving/i.test(msg)) return 'persisting to DB';
+                return 'JD matching';
+            }
+            default: return '';
         }
     }
 

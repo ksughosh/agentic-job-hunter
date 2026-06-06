@@ -425,8 +425,16 @@ def _run_scraper(user_id, profile, search_queries, work_mode):
     cancel_event = threading.Event()
     scraped_sources = []
 
-    def _on_source_done(source_name, count, ok, completed, total):
-        scraped_sources.append({"name": source_name, "count": count, "ok": ok})
+    def _on_source_done(source_name, count, ok, completed, total, error=""):
+        # A scraper that returns 0 jobs without an exception is still a failure
+        # (likely 403/CAPTCHA/timeout) — mark it red so the chip reflects reality.
+        effective_ok = ok and (count > 0)
+        scraped_sources.append({
+            "name": source_name,
+            "count": count,
+            "ok": effective_ok,
+            "error": error[:80] if error else ("0 results" if ok and count == 0 else ""),
+        })
         if _is_cancelled(user_id):
             cancel_event.set()
         pct = 25 + int((completed / total) * 20)  # 25% → 45%
