@@ -53,8 +53,26 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
-# Active provider
-_VALID_PROVIDERS = ("gemini", "gemma", "mlx", "lmstudio", "groq")
+# ─── Provider Registry ───────────────────────────────────────────────
+#
+# Single source of truth for every LLM provider. Each entry declares:
+#   kind      – "cloud" or "local"
+#   parallel  – max concurrent LLM requests (cloud uses 1 to respect rate limits)
+#   dispatch  – callable (prompt, max_tokens, temperature) → str  (bound lazily below)
+#   probe     – callable () → bool  (cheap reachability check, bound lazily below)
+#
+# To add a new provider: add ONE entry here. Everything else (is_cloud,
+# available_local_provider, _dispatch, parallelism, validation) derives
+# from this registry automatically — no hardcoded lists elsewhere.
+
+_PROVIDERS: dict[str, dict] = {
+    "mlx":      {"kind": "local",  "parallel": 1},   # native on-device, no server batching
+    "lmstudio": {"kind": "local",  "parallel": 6},   # OpenAI-compat server, batches well
+    "gemma":    {"kind": "local",  "parallel": 6},   # Ollama server, batches well
+    "groq":     {"kind": "cloud",  "parallel": 1},   # rate-limited cloud
+    "gemini":   {"kind": "cloud",  "parallel": 1},   # rate-limited cloud (15 req/min)
+}
+
 _active_provider = os.environ.get("LLM_PROVIDER", "mlx")
 
 # MLX model cache (loaded once, reused across calls)
@@ -67,10 +85,9 @@ _GROQ_BLOCK_UNTIL = 0.0
 
 
 def set_provider(provider: str):
-    """Switch between 'gemini', 'gemma', and 'mlx'."""
     global _active_provider
-    if provider not in _VALID_PROVIDERS:
-        raise ValueError(f"Provider must be one of {_VALID_PROVIDERS}")
+    if provider not in _PROVIDERS:
+        raise ValueError(f"Provider must be one of {tuple(_PROVIDERS)}")
     _active_provider = provider
     print(f"[LLM] Switched to provider: {provider}")
 
@@ -79,54 +96,61 @@ def get_provider() -> str:
     return _active_provider
 
 
-# ─── Unified call_llm ─────────────────────────────────────────────────
-
-
-_CLOUD_PROVIDERS = ("gemini", "groq")
-_LOCAL_PROVIDERS = ("mlx", "lmstudio", "gemma")
-
-
-def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
-    if provider == "mlx":      return _call_mlx(prompt, max_tokens, temperature)
-    if provider == "lmstudio": return _call_lmstudio(prompt, max_tokens, temperature)
-    if provider == "gemma":    return _call_gemma(prompt, max_tokens, temperature)
-    if provider == "groq":     return _call_groq(prompt, max_tokens, temperature)
-    return _call_gemini(prompt, max_tokens, temperature)
+# ─── Registry-driven helpers ─────────────────────────────────────────
 
 
 def is_cloud(provider: str = "") -> bool:
-    return (provider or _active_provider) in _CLOUD_PROVIDERS
+    p = provider or _active_provider
+    entry = _PROVIDERS.get(p)
+    return entry["kind"] == "cloud" if entry else False
+
+
+def get_parallel(provider: str = "") -> int:
+    """Max concurrent LLM requests for a provider.
+
+    Checks env overrides first (LLM_NUM_PARALLEL, OLLAMA_NUM_PARALLEL),
+    then falls back to the registry default.
+    """
+    for var in ("LLM_NUM_PARALLEL", "OLLAMA_NUM_PARALLEL"):
+        env_val = os.environ.get(var, "")
+        if env_val.isdigit() and int(env_val) > 0:
+            return int(env_val)
+    p = provider or _active_provider
+    entry = _PROVIDERS.get(p)
+    return entry["parallel"] if entry else 1
+
+
+# Dispatch table — maps provider id → call function.
+# Populated after the _call_* functions are defined (bottom of file).
+_DISPATCH_TABLE: dict = {}
+
+
+def _dispatch(provider: str, prompt: str, max_tokens: int, temperature: float) -> str:
+    fn = _DISPATCH_TABLE.get(provider)
+    if fn:
+        return fn(prompt, max_tokens, temperature)
+    # Fallback for unknown provider — try gemini
+    return _DISPATCH_TABLE.get("gemini", lambda *a: "")(prompt, max_tokens, temperature)
 
 
 def available_local_provider() -> str:
     """Return the first reachable local provider id, or '' if none.
 
-    Probes cheap signals: LM Studio /models endpoint, Ollama tags, mlx_lm
-    package. Used by the scan cascade to decide whether a cloud failure can
-    fall through to local.
+    Iterates registry locals and runs their probe. No hardcoded list —
+    adding a new local provider to _PROVIDERS is sufficient.
     """
-    import requests as _req
-    # MLX (native) — pkg installed
-    try:
-        import mlx_lm  # noqa: F401
-        return "mlx"
-    except Exception:
-        pass
-    # LM Studio server
-    try:
-        if _req.get(f"{LMSTUDIO_BASE_URL}/models", timeout=2).status_code == 200:
-            return "lmstudio"
-    except Exception:
-        pass
-    # Ollama — only count it as reachable if at least one model is pulled,
-    # otherwise dispatch would just return an "unknown model" error.
-    try:
-        r = _req.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
-        if r.status_code == 200 and r.json().get("models"):
-            return "gemma"
-    except Exception:
-        pass
+    for pid, entry in _PROVIDERS.items():
+        if entry["kind"] != "local":
+            continue
+        probe = _PROBE_TABLE.get(pid)
+        if probe and probe():
+            return pid
     return ""
+
+
+# Probe table — maps provider id → reachability check.
+# Populated after probe functions are defined (bottom of file).
+_PROBE_TABLE: dict = {}
 
 
 def call_provider(provider: str, prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> str:
@@ -156,7 +180,7 @@ def call_llm(prompt: str, max_tokens: int = 4096, temperature: float = 0.7) -> s
     if primary:
         return primary
 
-    if _active_provider in _CLOUD_PROVIDERS:
+    if is_cloud(_active_provider):
         local = available_local_provider()
         if local and local != _active_provider:
             result = _dispatch(local, prompt, max_tokens, temperature)
@@ -783,6 +807,47 @@ def _parse_json_response(text: str, default: dict) -> dict:
 
 
 # ─── Backward compatibility aliases ──────────────────────────────────
+# ─── Populate registry tables (after all _call_* functions are defined) ───
+
+_DISPATCH_TABLE.update({
+    "mlx":      _call_mlx,
+    "lmstudio": _call_lmstudio,
+    "gemma":    _call_gemma,
+    "groq":     _call_groq,
+    "gemini":   _call_gemini,
+})
+
+
+def _probe_mlx() -> bool:
+    try:
+        import mlx_lm  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _probe_lmstudio() -> bool:
+    try:
+        return requests.get(f"{LMSTUDIO_BASE_URL}/models", timeout=2).status_code == 200
+    except Exception:
+        return False
+
+
+def _probe_ollama() -> bool:
+    try:
+        r = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
+        return r.status_code == 200 and bool(r.json().get("models"))
+    except Exception:
+        return False
+
+
+_PROBE_TABLE.update({
+    "mlx":      _probe_mlx,
+    "lmstudio": _probe_lmstudio,
+    "gemma":    _probe_ollama,
+})
+
+
 # Other modules import from gemini_client — keep those names working.
 
 call_gemini = call_llm

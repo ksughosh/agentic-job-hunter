@@ -736,20 +736,14 @@ def _run_company_review_cached(jobs: list[dict]):
     return all_reviews
 
 
-def _get_local_parallel() -> int:
-    """Number of concurrent LLM requests for local providers (LM Studio / Ollama).
+def _get_parallel() -> int:
+    """Max concurrent LLM requests for the active provider.
 
-    Both LM Studio's MLX engine and Ollama batch concurrent requests. Measured
-    on M5 Pro: aggregate throughput knees at ~4-5 concurrent (≈2.8x a single
-    request); beyond that it saturates (8 ≈ 4). Default 6 captures the knee with
-    margin. Override with LLM_NUM_PARALLEL (falls back to OLLAMA_NUM_PARALLEL).
+    Delegates to the provider registry in llm_client which holds per-provider
+    defaults and checks env overrides (LLM_NUM_PARALLEL, OLLAMA_NUM_PARALLEL).
     """
-    import os
-    for var in ("LLM_NUM_PARALLEL", "OLLAMA_NUM_PARALLEL"):
-        env_val = os.environ.get(var, "")
-        if env_val.isdigit() and int(env_val) > 0:
-            return int(env_val)
-    return 6
+    from agents.llm_client import get_parallel
+    return get_parallel()
 
 
 # ─── JD Match ─────────────────────────────────────────────────────
@@ -799,8 +793,8 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
         _set(user_id, f"Agent 3: Matching JDs... {done}/{total} jobs scored", pct)
 
     if is_local:
-        # Concurrent request capacity for the local LLM server
-        local_workers = _get_local_parallel()
+        # Concurrent request capacity from provider registry
+        local_workers = _get_parallel()
         print(f"  ⚡ Local LLM: {local_workers} parallel workers", flush=True)
         reviewed = jd_match_parallel(
             agent, llm_jobs, company_reviews,
