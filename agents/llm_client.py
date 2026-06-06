@@ -66,7 +66,7 @@ GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"
 # from this registry automatically — no hardcoded lists elsewhere.
 
 _PROVIDERS: dict[str, dict] = {
-    "mlx":      {"kind": "local",  "parallel": 1},   # native on-device, no server batching
+    "mlx":      {"kind": "local",  "parallel": 6},   # Apple Silicon native, batches via mlx-lm
     "lmstudio": {"kind": "local",  "parallel": 6},   # OpenAI-compat server, batches well
     "gemma":    {"kind": "local",  "parallel": 6},   # Ollama server, batches well
     "groq":     {"kind": "cloud",  "parallel": 1},   # rate-limited cloud
