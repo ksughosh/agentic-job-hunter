@@ -159,6 +159,11 @@ def start_search():
     work_mode = request.form.get("work_mode", "remote").strip()  # comma-sep: "remote,hybrid"
     location = request.form.get("location", "Anywhere").strip() or "Anywhere"
     llm_provider = request.form.get("llm_provider", "gemini").strip()
+    # Enrichment toggle — when on, the pipeline crawls each listing page to
+    # extract the employer's canonical apply URL + the full description,
+    # which feeds into the hardened match score.  Defaults to on.
+    enrich_flag = request.form.get("enrich_jobs", "true").strip().lower()
+    enrich_jobs = enrich_flag not in ("false", "0", "no", "off")
 
     if not resume_file or not desired_roles:
         return jsonify({"status": "error", "message": "Please upload a resume and specify at least one role."})
@@ -176,7 +181,7 @@ def start_search():
     threading.Thread(
         target=pipeline_svc.run_full,
         args=(uid, resume_path, roles_list, work_mode),
-        kwargs={"location": location},
+        kwargs={"location": location, "enrich_jobs": enrich_jobs},
         daemon=True,
     ).start()
     return jsonify({"status": "started", "message": "Pipeline started..."})

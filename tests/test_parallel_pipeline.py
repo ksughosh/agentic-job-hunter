@@ -84,7 +84,7 @@ class TestParallelScraping:
 
         callback_calls = []
 
-        def on_source_done(source_name, count, ok, completed, total):
+        def on_source_done(source_name, count, ok, completed, total, **kwargs):
             callback_calls.append({
                 "name": source_name, "count": count, "ok": ok,
                 "completed": completed, "total": total,
@@ -129,7 +129,7 @@ class TestParallelScraping:
         scrapers = [FakeScraper(f"S{i}", [make_fake_job()], delay=0.15) for i in range(20)]
         cancel_event = threading.Event()
 
-        def on_done(name, count, ok, completed, total):
+        def on_done(name, count, ok, completed, total, **kwargs):
             if completed >= 2:
                 cancel_event.set()
 

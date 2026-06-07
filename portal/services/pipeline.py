@@ -12,6 +12,7 @@ Flow:
 """
 
 import threading
+import time
 from dataclasses import asdict
 from datetime import datetime
 
@@ -112,8 +113,8 @@ def _scan_to_profile(scan: dict) -> dict:
 # ─── Full pipeline (onboarding: resume → search → agents) ────────
 
 
-def run_full(user_id: str, resume_path: str, desired_roles: list, work_mode: str = "remote", location: str = "Anywhere"):
-    print(f"[Pipeline] run_full started for {user_id}, roles={desired_roles}, mode={work_mode}, location={location}", flush=True)
+def run_full(user_id: str, resume_path: str, desired_roles: list, work_mode: str = "remote", location: str = "Anywhere", enrich_jobs: bool = True):
+    print(f"[Pipeline] run_full started for {user_id}, roles={desired_roles}, mode={work_mode}, location={location}, enrich={enrich_jobs}", flush=True)
     _clear_cancel(user_id)
     try:
         roles_str = ", ".join(desired_roles)
@@ -212,7 +213,8 @@ def run_full(user_id: str, resume_path: str, desired_roles: list, work_mode: str
         _check_cancel(user_id)
 
         # Steps 3–5: Agent pipeline
-        run_agents(user_id, profile, unique_queries[:20], roles_str, work_mode)
+        run_agents(user_id, profile, unique_queries[:20], roles_str, work_mode,
+                   enrich_jobs=enrich_jobs)
 
     except PipelineCancelled:
         _set(user_id, "Pipeline cancelled.", 0, running=False)
@@ -267,7 +269,8 @@ def _build_search_queries(raw_queries: list, work_mode: str, location: str = "An
 
 
 def run_agents(user_id: str, profile: dict, search_queries: list,
-               desired_role: str, work_mode: str = "remote"):
+               desired_role: str, work_mode: str = "remote",
+               enrich_jobs: bool = True):
     _clear_cancel(user_id)
     run_id = None
     try:
@@ -335,7 +338,19 @@ def run_agents(user_id: str, profile: dict, search_queries: list,
         jobs_to_analyze = db.get_jobs_by_ids(all_eligible_job_ids)
         _check_cancel(user_id)
 
-        _set(user_id, f"{len(jobs_to_analyze)} jobs to analyze. Agent 2: Reviewing companies...", 55)
+        # ── Enrichment: crawl listing pages to recover canonical apply URLs
+        # and full descriptions before scoring.  Improves dashboard apply
+        # links AND gives the JD matcher a real description to work from
+        # (board scrapers often return 1-line descriptions). Cancellable.
+        if enrich_jobs:
+            _set(user_id, f"Enriching {len(jobs_to_analyze)} jobs (fetching descriptions + apply URLs)...", 58)
+            try:
+                jobs_to_analyze = _run_job_enrichment(user_id, jobs_to_analyze)
+            except Exception as e:
+                print(f"  ⚠️ Job enrichment failed (continuing): {e}", flush=True)
+            _check_cancel(user_id)
+
+        _set(user_id, f"{len(jobs_to_analyze)} jobs to analyze. Agent 2: Reviewing companies...", 62)
 
         # ── Agent 2: Company Review (with cache) ──
         company_reviews = _run_company_review_cached(jobs_to_analyze)
@@ -733,6 +748,44 @@ def _dedup_against_db(user_id, jobs):
 # ─── Company Review (DB-cached) ──────────────────────────────────
 
 
+def _run_job_enrichment(user_id: str, jobs: list[dict]) -> list[dict]:
+    """Crawl listing pages to recover canonical apply URLs + full descriptions.
+
+    Mutates and returns the same list.  Enrichment is best-effort: failures
+    leave individual jobs unchanged.  Honours pipeline cancellation via the
+    shared ``_cancel_flags`` map.
+    """
+    if not jobs:
+        return jobs
+
+    # Lazy import keeps the module-level import graph small (and lets tests
+    # stub out the enricher).
+    from agents.job_enricher import enrich_jobs
+
+    cancel_event = threading.Event()
+    # Background watcher converts the pipeline cancel flag into an Event
+    # the enricher knows how to read.
+    def _watch_cancel():
+        while not cancel_event.is_set():
+            if _is_cancelled(user_id):
+                cancel_event.set()
+                return
+            time.sleep(0.25)
+
+    watcher = threading.Thread(target=_watch_cancel, daemon=True)
+    watcher.start()
+
+    def _on_progress(done: int, total: int):
+        # Map progress into the 58–62% slot of the overall pipeline bar.
+        pct = 58 + int(4 * (done / max(total, 1)))
+        _set(user_id, f"Enriching jobs ({done}/{total}): canonical apply URLs + full descriptions",
+             min(pct, 62))
+
+    enrich_jobs(jobs, cancel_event=cancel_event, on_progress=_on_progress)
+    cancel_event.set()
+    return jobs
+
+
 def _run_company_review_cached(jobs: list[dict]):
     """Run company reviews, using DB cache for already-reviewed companies."""
     company_names = list({j.get("company", "") for j in jobs if j.get("company")})
@@ -864,6 +917,43 @@ def _run_jd_match(user_id, jobs, company_reviews, profile=None, search_context=N
             cr = company_reviews.get(company)
             result = no_llm_agent.review_job(j, cr)
             reviewed.append(result)
+
+    # ── Match-score hardening ─────────────────────────────────────
+    # Blend the LLM match_score with a deterministic profile↔description
+    # keyword overlap signal.  Reduces hallucinated high scores from the
+    # LLM when the description has no real alignment with the profile, and
+    # boosts scores when the LLM missed obvious matches.  Only applied
+    # when we have BOTH a profile and a real (enriched) description.
+    if profile:
+        try:
+            from agents.job_enricher import keyword_overlap_score, harden_match_score
+            # Build a url→description map from the (already enriched) jobs
+            url_to_desc = {}
+            for j in job_dicts:
+                u = j.get("url") or j.get("source_url") or ""
+                d = j.get("description") or ""
+                if u and d:
+                    url_to_desc[u] = d
+            for r in reviewed:
+                url = getattr(r, "url", "") or getattr(r, "source_url", "")
+                desc = url_to_desc.get(url, "")
+                if not desc:
+                    continue
+                overlap = keyword_overlap_score(profile, desc)
+                hardened = harden_match_score(getattr(r, "match_score", 0), overlap)
+                # Update the LLM score AND propagate to composite_score so
+                # the ranking reflects the hardened value.
+                old = getattr(r, "match_score", 0)
+                r.match_score = hardened
+                if hasattr(r, "composite_score"):
+                    delta = hardened - old
+                    r.composite_score = max(0.0, min(100.0, getattr(r, "composite_score", 0) + delta))
+                # Stash the raw signals so they're auditable downstream
+                if hasattr(r, "__dict__"):
+                    r.__dict__["overlap_score"] = overlap
+                    r.__dict__["llm_match_score"] = old
+        except Exception as e:
+            print(f"  ⚠️ Match-score hardening failed (continuing): {e}", flush=True)
 
     # Sort by composite score, assign ranks
     reviewed.sort(key=lambda r: r.composite_score, reverse=True)

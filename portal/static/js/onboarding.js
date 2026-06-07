@@ -378,7 +378,13 @@ const OnboardingVM = (() => {
             $progressStatus.textContent = 'Initializing...';
 
             try {
-                const data = await Api.startSearch(new FormData($form));
+                const fd = new FormData($form);
+                // Send enrichment flag as a string flag the route can read.
+                // Default checkbox state is "on" so the default behaviour is
+                // to crawl listing pages for canonical apply URLs + descriptions.
+                const $enrich = document.getElementById('enrichJobs');
+                fd.append('enrich_jobs', ($enrich && $enrich.checked) ? 'true' : 'false');
+                const data = await Api.startSearch(fd);
                 if (data.status === 'started' || data.status === 'already_running') {
                     _startPolling();
                 } else {

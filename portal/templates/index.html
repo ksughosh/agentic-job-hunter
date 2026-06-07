@@ -767,7 +767,10 @@
                         </div>
                     </td>
                     <td onclick="event.stopPropagation()">
-                        {% if job.job_url %}
+                        {% if job.apply_url %}
+                            <a href="{{ job.apply_url }}" target="_blank" class="gen-btn apply-btn" title="Employer's direct apply page">Apply &#x2197;</a>
+                            {% if job.enriched %}<span class="tag" style="background:rgba(0,206,201,0.15);color:var(--green);font-size:10px;margin-left:4px;" title="Apply URL verified via web crawl">&#x2713; Verified</span>{% endif %}
+                        {% elif job.job_url %}
                             <a href="{{ job.job_url }}" target="_blank" class="gen-btn apply-btn">Apply &#x2197;</a>
                         {% else %}
                             <span class="tag tag-source">Via {{ job.source }}</span>
